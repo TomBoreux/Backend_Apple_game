@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual env
+venv/
+.env/
+.env.*
+
+# Django
+*.log
+db.sqlite3
+db.sqlite3-journal
+
+# Migrations (optionnel)
+**/migrations/*
+!**/migrations/__init__.py
+
+# Static files
+staticfiles/
+static/
+
+# Media (uploads : rapports, seeds)
+media/
+
+# Environment variables
+.env
+
+# VS Code
+.vscode/
+
+# MacOS
+.DS_Store
+
+# PyCharm
+.idea/
+
+# pytest
+.pytest_cache/
+
+# Coverage
+.coverage
+htmlcov/
+
+# Logs
+*.log
+
+# Temporary files
+*.swp
+*~
+
+# Node (si jamais)
+node_modules/
+
+# Godot (si tu mixes projet)
+.import/
+.godot/
+export/
