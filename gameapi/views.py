@@ -9,68 +9,76 @@ from .serializers import (
     RapportCompletSerializer,
 )
 
-@api_view(['GET', 'POST', 'PUT', 'DELETE','PATCH'])
+
+def get_client_ip(request):
+    forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+
+    real_ip = request.META.get("HTTP_X_REAL_IP")
+    if real_ip:
+        return real_ip.strip()
+
+    return request.META.get("REMOTE_ADDR")
+
+
+@api_view(['GET', 'POST', 'DELETE'])
 def user_api(request, id=None):
 
-    # GET
     if request.method == 'GET':
         if id:
             try:
                 user = User.objects.get(id=id)
+                return Response(UserSerializer(user).data)
             except User.DoesNotExist:
                 return Response({"error": "User not found"}, status=404)
 
-            serializer = UserSerializer(user)
-            return Response(serializer.data)
-        else:
-            users = User.objects.all()
-            serializer = UserSerializer(users, many=True)
-            return Response(serializer.data)
+        users = User.objects.all()
+        return Response(UserSerializer(users, many=True).data)
 
-    # POST (create)
     if request.method == 'POST':
-        serializer = UserSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors)
+        token = request.data.get("token")
+        uuid = request.data.get("uuid")
 
-    # PUT (update COMPLET)
-    if request.method == 'PUT':
-        try:
-            user = User.objects.get(id=id)
-        except User.DoesNotExist:
-            return Response({"error": "User not found"}, status=404)
+        if not token:
+            return Response({"error": "token required"}, status=400)
 
-        serializer = UserSerializer(user, data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors)
+        if token == "guest":
+            try:
+                user = User.objects.get(token="guest")
+            except User.DoesNotExist:
+                user = User.objects.create(token="guest", uuid=None)
 
-    # PATCH (update PARTIEL)
-    if request.method == 'PATCH':
-        try:
-            user = User.objects.get(id=id)
-        except User.DoesNotExist:
-            return Response({"error": "User not found"}, status=404)
+            # update IP
+            user.device_public_ip = get_client_ip(request)
+            user.save()
 
-        serializer = UserSerializer(user, data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors)
+            return Response(UserSerializer(user).data)
 
+        if not uuid:
+            return Response({"error": "uuid required"}, status=400)
 
-    # DELETE
+        user, created = User.objects.get_or_create(
+            token=token,
+            defaults={
+                "uuid": uuid,
+                "device_public_ip": get_client_ip(request)
+            }
+        )
+
+        if not created:
+            user.device_public_ip = get_client_ip(request)
+            user.save()
+
+        return Response(UserSerializer(user).data)
+
     if request.method == 'DELETE':
         try:
             user = User.objects.get(id=id)
+            user.delete()
+            return Response({"message": "User deleted"})
         except User.DoesNotExist:
             return Response({"error": "User not found"}, status=404)
-
-        user.delete()
-        return Response({"message": "User deleted"})
 
 @api_view(['GET', 'POST', 'DELETE'])
 def medecin_api(request, id=None):

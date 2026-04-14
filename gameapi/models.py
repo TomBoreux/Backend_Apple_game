@@ -14,13 +14,15 @@ class Medecin(models.Model):
 
 # USER
 class User(models.Model):
-    token = models.CharField(max_length=255, unique=True, null=True, blank=True)
-    pseudo = models.CharField(max_length=100, default="guest")
-    medecins = models.ManyToManyField(Medecin, related_name="users", blank=True)  # SOIGNER
+    token = models.CharField(max_length=255, unique=True)
+    uuid = models.CharField(max_length=255, null=True, blank=True)
+
+    medecins = models.ManyToManyField("Medecin", related_name="users", blank=True)
+
     device_public_ip = models.GenericIPAddressField(null=True, blank=True)
 
     def __str__(self):
-        return f"{self.id} {self.pseudo}"
+        return f"{self.id} | token={self.token} | uuid={self.uuid}"
 
 
 # SEED LEVEL
