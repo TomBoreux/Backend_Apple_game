@@ -1,7 +1,13 @@
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-from .models import User
-from .serializers import UserSerializer
+from .models import User, Medecin, SeedLevel, RapportMedecin, RapportComplet
+from .serializers import (
+    UserSerializer,
+    MedecinSerializer,
+    SeedLevelSerializer,
+    RapportMedecinSerializer,
+    RapportCompletSerializer,
+)
 
 @api_view(['GET', 'POST', 'PUT', 'DELETE','PATCH'])
 def user_api(request, id=None):
