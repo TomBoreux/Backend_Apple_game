@@ -56,4 +56,4 @@ node_modules/
 # Godot (si tu mixes projet)
 .import/
 .godot/
-export/
+export/.env

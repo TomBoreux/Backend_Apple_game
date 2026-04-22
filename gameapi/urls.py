@@ -1,30 +1,25 @@
 from django.urls import path
 from .views import (
+    create_game_api_token,
+    refresh_game_api_token,
     user_api,
-    medecin_api,
+    doctor_api,
     seed_api,
-    rapport_medecin_api,
-    rapport_complet_api
+    doctor_report_api,
+    full_report_api,
 )
 
 urlpatterns = [
-    # USER
-    path('user/', user_api),
-    path('user/<int:id>/', user_api),
-
-    # MEDECIN
-    path('medecin/', medecin_api),
-    path('medecin/<int:id>/', medecin_api),
-
-    # SEED LEVEL
-    path('seed/', seed_api),
-    path('seed/<int:id>/', seed_api),
-
-    # RAPPORT MEDECIN
-    path('rapport-medecin/', rapport_medecin_api),
-    path('rapport-medecin/<int:id>/', rapport_medecin_api),
-
-    # RAPPORT COMPLET
-    path('rapport-complet/', rapport_complet_api),
-    path('rapport-complet/<int:id>/', rapport_complet_api),
+    path("auth/token/", create_game_api_token),
+    path("auth/refresh/", refresh_game_api_token),
+    path("user/", user_api),
+    path("user/<int:id>/", user_api),
+    path("doctor/", doctor_api),
+    path("doctor/<int:id>/", doctor_api),
+    path("seed/", seed_api),
+    path("seed/<int:id>/", seed_api),
+    path("doctor-report/", doctor_report_api),
+    path("doctor-report/<int:id>/", doctor_report_api),
+    path("full-report/", full_report_api),
+    path("full-report/<int:id>/", full_report_api),
 ]

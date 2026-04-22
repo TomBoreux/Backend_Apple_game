@@ -1,57 +1,90 @@
 from django.db import models
+from django.utils import timezone
 
 
-# MEDECIN
-class Medecin(models.Model):
-    nom = models.CharField(max_length=100)
-    prenom = models.CharField(max_length=100)
+class Doctor(models.Model):
+    last_name = models.CharField(max_length=100)
+    first_name = models.CharField(max_length=100)
     token = models.CharField(max_length=255, unique=True)
     email = models.EmailField(max_length=100, unique=True)
 
     def __str__(self):
-        return f"{self.nom} {self.prenom}"
+        return f"{self.last_name} {self.first_name}"
 
 
-# USER
 class User(models.Model):
-    token = models.CharField(max_length=255, unique=True)
+    token = models.CharField(max_length=255)
     uuid = models.CharField(max_length=255, null=True, blank=True)
+    age = models.IntegerField(null=True, blank=True)
+    doctors = models.ManyToManyField("Doctor", related_name="users", blank=True)
 
-    medecins = models.ManyToManyField("Medecin", related_name="users", blank=True)
-
-    device_public_ip = models.GenericIPAddressField(null=True, blank=True)
+    class Meta:
+        unique_together = ("token", "uuid")
 
     def __str__(self):
         return f"{self.id} | token={self.token} | uuid={self.uuid}"
 
-
-# SEED LEVEL
 class SeedLevel(models.Model):
-    nom = models.CharField(max_length=100)
-    seed_file = models.FileField(upload_to="seeds/")
+    name = models.CharField(max_length=100)
+    file = models.FileField(upload_to="seeds/")
 
     def __str__(self):
-        return self.nom
+        return self.name or str(self.file)
 
 
-# RAPPORT MEDECIN
-class RapportMedecin(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="rapports")
-    seed = models.ForeignKey(SeedLevel, on_delete=models.CASCADE)
-    fichier = models.FileField(upload_to="rapports/medecin/")
+class DoctorReport(models.Model):
+    session_id = models.CharField(max_length=255)
+    file = models.FileField(upload_to="reports/doctor/")
     date = models.DateTimeField(auto_now_add=True)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="doctor_reports")
+    seed = models.ForeignKey(SeedLevel, on_delete=models.CASCADE)
+    doctors = models.ManyToManyField(Doctor, related_name="report_viewed")
 
-    medecins = models.ManyToManyField(Medecin, related_name="rapports_consultes")  # CONSULTE
+    class Meta:
+        unique_together = ("user", "session_id")
 
     def __str__(self):
         return f"Rapport {self.id} - User {self.user.id}"
 
 
-# RAPPORT COMPLET
-class RapportComplet(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="rapports_complets")
-    fichier = models.FileField(upload_to="rapports/complet/")
+class FullReport(models.Model):
+    session_id = models.CharField(max_length=255)
+    file = models.FileField(upload_to="reports/full/")
     date = models.DateTimeField(auto_now_add=True)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="full_reports")
+
+    class Meta:
+        unique_together = ("user", "session_id")
 
     def __str__(self):
-        return f"RapportComplet {self.id}"
+        return f"RapportComplet {self.user.id} _ {self.id}"
+
+
+class GameApiTokenSession(models.Model):
+    device_uuid = models.CharField(max_length=255, blank=True, default="")
+    user_agent = models.CharField(max_length=255, blank=True, default="")
+    refresh_token_hash = models.CharField(max_length=64, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_used_at = models.DateTimeField(auto_now=True)
+    expires_at = models.DateTimeField()
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["expires_at"]),
+            models.Index(fields=["revoked_at"]),
+        ]
+
+    def is_active(self):
+        return self.revoked_at is None and self.expires_at > timezone.now()
+
+    def revoke(self):
+        if self.revoked_at is None:
+            self.revoked_at = timezone.now()
+            self.save(update_fields=["revoked_at", "last_used_at"])
+
+    def touch(self):
+        self.save(update_fields=["last_used_at"])
+
+    def __str__(self):
+        return f"GameApiTokenSession {self.id} active={self.is_active()}"

@@ -1,27 +1,84 @@
 from rest_framework import serializers
-from .models import User, Medecin, SeedLevel, RapportMedecin, RapportComplet
+
+from .models import (
+    User,
+    Doctor,
+    SeedLevel,
+    DoctorReport,
+    FullReport,
+)
+
+
+class DoctorSummarySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Doctor
+        fields = ("id", "last_name", "first_name", "token", "email")
+
 
 class UserSerializer(serializers.ModelSerializer):
+    doctors = DoctorSummarySerializer(many=True, read_only=True)
+    latest_doctor_id = serializers.SerializerMethodField()
+    latest_doctor_token = serializers.SerializerMethodField()
+    doctor_key = serializers.SerializerMethodField()
+
+    def _get_latest_doctor(self, obj):
+        return obj.doctors.order_by("-id").first()
+
+    def get_latest_doctor_id(self, obj):
+        doctor = self._get_latest_doctor(obj)
+        return doctor.id if doctor else None
+
+    def get_latest_doctor_token(self, obj):
+        doctor = self._get_latest_doctor(obj)
+        return doctor.token if doctor else ""
+
+    def get_doctor_key(self, obj):
+        doctor = self._get_latest_doctor(obj)
+        return doctor.token if doctor else ""
+
     class Meta:
         model = User
-        fields = '__all__'
+        fields = (
+            "id",
+            "token",
+            "uuid",
+            "age",
+            "doctors",
+            "latest_doctor_id",
+            "latest_doctor_token",
+            "doctor_key",
+        )
 
-class MedecinSerializer(serializers.ModelSerializer):
+
+class DoctorSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Medecin
-        fields = '__all__'
+        model = Doctor
+        fields = ("id", "last_name", "first_name", "token", "email")
+
 
 class SeedLevelSerializer(serializers.ModelSerializer):
     class Meta:
         model = SeedLevel
-        fields = '__all__'
+        fields = ("id", "name", "file")
 
-class RapportMedecinSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = RapportMedecin
-        fields = '__all__'
 
-class RapportCompletSerializer(serializers.ModelSerializer):
+class DoctorReportSerializer(serializers.ModelSerializer):
+    file = serializers.FileField()
+    doctors = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=Doctor.objects.all(),
+    )
+
     class Meta:
-        model = RapportComplet
-        fields = '__all__'
+        model = DoctorReport
+        fields = ("id", "user", "session_id", "seed", "file", "date", "doctors")
+        validators = []
+
+
+class FullReportSerializer(serializers.ModelSerializer):
+    file = serializers.FileField()
+
+    class Meta:
+        model = FullReport
+        fields = ("id", "user", "session_id", "file", "date")
+        validators = []
