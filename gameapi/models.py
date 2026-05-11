@@ -15,7 +15,7 @@ class Doctor(models.Model):
 class User(models.Model):
     token = models.CharField(max_length=255)
     uuid = models.CharField(max_length=255, null=True, blank=True)
-    age = models.IntegerField(null=True, blank=True)
+    birth_year = models.IntegerField(null=True, blank=True)
     doctors = models.ManyToManyField("Doctor", related_name="users", blank=True)
 
     class Meta:
@@ -23,6 +23,7 @@ class User(models.Model):
 
     def __str__(self):
         return f"{self.id} | token={self.token} | uuid={self.uuid}"
+
 
 class SeedLevel(models.Model):
     name = models.CharField(max_length=100)
@@ -32,26 +33,17 @@ class SeedLevel(models.Model):
         return self.name or str(self.file)
 
 
-class DoctorReport(models.Model):
-    session_id = models.CharField(max_length=255)
-    file = models.FileField(upload_to="reports/doctor/")
-    date = models.DateTimeField(auto_now_add=True)
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="doctor_reports")
-    seed = models.ForeignKey(SeedLevel, on_delete=models.CASCADE)
-    doctors = models.ManyToManyField(Doctor, related_name="report_viewed")
-
-    class Meta:
-        unique_together = ("user", "session_id")
-
-    def __str__(self):
-        return f"Rapport {self.id} - User {self.user.id}"
-
 
 class FullReport(models.Model):
     session_id = models.CharField(max_length=255)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="full_reports")
     file = models.FileField(upload_to="reports/full/")
     date = models.DateTimeField(auto_now_add=True)
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="full_reports")
+    app_version = models.CharField(max_length=32, blank=True, db_index=True)
+    app_version_code = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    level_generation_version = models.CharField(max_length=64, blank=True, db_index=True)
+    client_platform = models.CharField(max_length=32, blank=True)
+    seed_levels = models.ManyToManyField("SeedLevel", related_name="full_reports", blank=True)
 
     class Meta:
         unique_together = ("user", "session_id")

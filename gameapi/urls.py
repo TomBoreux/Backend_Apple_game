@@ -5,8 +5,8 @@ from .views import (
     user_api,
     doctor_api,
     seed_api,
-    doctor_report_api,
     full_report_api,
+    full_report_chart_api,
 )
 
 urlpatterns = [
@@ -18,8 +18,7 @@ urlpatterns = [
     path("doctor/<int:id>/", doctor_api),
     path("seed/", seed_api),
     path("seed/<int:id>/", seed_api),
-    path("doctor-report/", doctor_report_api),
-    path("doctor-report/<int:id>/", doctor_report_api),
     path("full-report/", full_report_api),
     path("full-report/<int:id>/", full_report_api),
+    path("full-report/<int:id>/chart/", full_report_chart_api),
 ]

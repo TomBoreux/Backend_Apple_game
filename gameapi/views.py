@@ -1,7 +1,10 @@
 from django.conf import settings
+from django.core.files.base import ContentFile
 from django.core import signing
-from django.db import transaction
+from django.db import IntegrityError, transaction
+from django.http import HttpResponse
 from django.utils import timezone
+from django.utils.text import get_valid_filename
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -12,38 +15,326 @@ from .models import (
     User,
     Doctor,
     SeedLevel,
-    DoctorReport,
     FullReport,
 )
 from .models import GameApiTokenSession
-from .serializers import (
-    UserSerializer,
-    DoctorSerializer,
-    SeedLevelSerializer,
-    DoctorReportSerializer,
-    FullReportSerializer,
+from .report_charts import (
+    ReportChartDependencyError,
+    ReportChartError,
+    generate_full_report_chart,
 )
 
 ACCESS_TOKEN_SALT = "gameapi.access_token"
+REPORT_LEVEL_COUNT_WIDTH = 2
+
+
+def doctor_data(obj):
+    return {
+        "id": obj.id,
+        "last_name": obj.last_name,
+        "first_name": obj.first_name,
+        "token": obj.token,
+        "email": obj.email,
+    }
+
+
+def seed_level_data(obj):
+    return {
+        "id": obj.id,
+        "name": obj.name,
+        "file": obj.file.url if obj.file else None,
+    }
+
+
+def user_data(obj):
+    doctor = obj.doctors.order_by("-id").first()
+    doctors = [doctor_data(doctor_obj) for doctor_obj in obj.doctors.all()]
+
+    return {
+        "id": obj.id,
+        "token": obj.token,
+        "uuid": obj.uuid,
+        "birth_year": obj.birth_year,
+        "doctors": doctors,
+        "latest_doctor_id": doctor.id if doctor else None,
+        "latest_doctor_token": doctor.token if doctor else "",
+        "doctor_key": doctor.token if doctor else "",
+    }
+
+
+def full_report_data(obj):
+    return {
+        "id": obj.id,
+        "user": obj.user_id,
+        "session_id": obj.session_id,
+        "file": obj.file.url if obj.file else None,
+        "date": obj.date,
+        "app_version": obj.app_version,
+        "app_version_code": obj.app_version_code,
+        "level_generation_version": obj.level_generation_version,
+        "client_platform": obj.client_platform,
+        "seed_levels": [seed.id for seed in obj.seed_levels.all()],
+    }
+
+
+def request_seed_levels(request):
+    for field in ("seed_levels", "seeds", "seed"):
+        seed_level_ids = request_data_values(request, field)
+        if seed_level_ids:
+            break
+    else:
+        return [], None
+
+
+    try:
+        ids = [int(seed_level_id) for seed_level_id in seed_level_ids]
+    except (TypeError, ValueError):
+        return [], "invalid"
+
+    seed_levels = list(SeedLevel.objects.filter(id__in=ids))
+    if len(seed_levels) != len(set(ids)):
+        return [], "missing"
+
+    return seed_levels, None
+
+
+def request_data_values(request, field):
+    if hasattr(request.data, "getlist"):
+        values = request.data.getlist(field)
+    else:
+        value = request.data.get(field)
+        values = [] if value in (None, "") else [value]
+
+    parsed_values = []
+    for value in values:
+        if value in (None, ""):
+            continue
+
+        parsed_values.extend(
+            item.strip()
+            for item in str(value).split(",")
+            if item.strip()
+        )
+
+    return parsed_values
+
+
+def dat_report_blocks(text_content):
+    lines = [line.strip() for line in text_content.splitlines() if line.strip()]
+    if not lines:
+        return [], "invalid"
+
+    try:
+        level_count = int(lines[0])
+    except ValueError:
+        return [], "invalid"
+
+    if level_count < 1:
+        return [], "invalid"
+
+    try:
+        index = 1
+        blocks = []
+        for level_number in range(level_count):
+            block, index = read_dat_level_block(
+                lines,
+                index,
+                level_number,
+                level_count,
+            )
+            blocks.append(block)
+    except ValueError:
+        return [], "invalid"
+
+    if index != len(lines):
+        return [], "invalid"
+
+    return blocks, None
+
+
+def read_dat_level_block(lines, index, level_number, level_count):
+    start = index
+
+    index = consume_dat_line(lines, index, int)
+    index = consume_dat_line(lines, index, float)
+    index = consume_dat_pair(lines, index, int)
+    index = consume_dat_pair(lines, index, int)
+    index = consume_dat_visual(lines, index)
+
+    tree_count, index = read_dat_count(lines, index)
+    for _tree_index in range(tree_count):
+        index = consume_dat_pair(lines, index, int)
+
+    position_count, index = read_dat_count(lines, index)
+    for _position_index in range(position_count):
+        index = consume_dat_pair(lines, index, float)
+
+    is_last_level = level_number == level_count - 1
+    remaining_lines = len(lines) - index
+    if remaining_lines >= 2:
+        index = consume_dat_line(lines, index, float)
+        index = consume_dat_line(lines, index, int)
+    elif remaining_lines == 0 and is_last_level:
+        pass
+    else:
+        raise ValueError
+
+    return lines[start:index], index
+
+
+def consume_dat_line(lines, index, parser):
+    if index >= len(lines):
+        raise ValueError
+
+    parser(lines[index])
+    return index + 1
+
+
+def consume_dat_pair(lines, index, parser):
+    if index >= len(lines):
+        raise ValueError
+
+    values = lines[index].split()
+    if len(values) != 2:
+        raise ValueError
+
+    for value in values:
+        parser(value)
+
+    return index + 1
+
+
+def consume_dat_visual(lines, index):
+    if index >= len(lines):
+        raise ValueError
+
+    values = lines[index].split()
+    if len(values) != 3:
+        raise ValueError
+
+    for value in values:
+        int(value)
+
+    return index + 1
+
+
+def read_dat_count(lines, index):
+    if index >= len(lines):
+        raise ValueError
+
+    count = int(lines[index])
+    if count < 0:
+        raise ValueError
+
+    return count, index + 1
+
+
+def uploaded_dat_blocks(uploaded_file):
+    try:
+        raw_content = uploaded_file.read()
+        if hasattr(uploaded_file, "seek"):
+            uploaded_file.seek(0)
+        text_content = raw_content.decode("utf-8")
+        return dat_report_blocks(text_content)
+    except (AttributeError, UnicodeDecodeError, ValueError):
+        return [], "invalid"
+
+
+def existing_dat_blocks(obj):
+    if not obj.file:
+        return [], None
+
+    try:
+        with obj.file.open("rb") as file_handle:
+            text_content = file_handle.read().decode("utf-8")
+            return dat_report_blocks(text_content)
+    except (FileNotFoundError, UnicodeDecodeError, ValueError):
+        return [], "invalid"
+
+
+def append_report_dat(obj, current_count, uploaded_blocks):
+    if not uploaded_blocks:
+        return
+
+    filename = report_dat_filename(obj)
+    if not obj.file:
+        create_report_dat(obj, filename, uploaded_blocks)
+        return
+
+    new_count = current_count + len(uploaded_blocks)
+    appended_content = dat_blocks_content(uploaded_blocks, include_count=False)
+
+    with obj.file.open("r+b") as file_handle:
+        header = file_handle.readline()
+        if not header:
+            raise ValueError("The existing report file has no level count.")
+
+        header_text = header.decode("utf-8").rstrip("\r\n")
+        new_header_text = format_level_count(new_count, len(header_text))
+        if len(new_header_text) > len(header_text):
+            raise ValueError(
+                "The existing report file level-count header is too short "
+                "to append in place."
+            )
+
+        file_handle.seek(0)
+        file_handle.write(new_header_text.encode("utf-8"))
+        file_handle.seek(0, 2)
+        if file_handle.tell() > 0:
+            file_handle.seek(-1, 2)
+            last_byte = file_handle.read(1)
+            if last_byte not in (b"\n", b"\r"):
+                file_handle.write(b"\n")
+            else:
+                file_handle.seek(0, 2)
+        file_handle.write(appended_content)
+
+
+def create_report_dat(obj, filename, blocks):
+    content = dat_blocks_content(blocks, include_count=True)
+    obj.file.save(filename, ContentFile(content), save=False)
+
+
+def dat_blocks_content(blocks, include_count):
+    lines = []
+    if include_count:
+        lines.append(format_level_count(len(blocks), REPORT_LEVEL_COUNT_WIDTH))
+
+    for block in blocks:
+        lines.extend(block)
+
+    if not lines:
+        return b""
+
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def format_level_count(count, width):
+    return str(count).zfill(width)
+
+
+def report_dat_filename(obj):
+    session_id = get_valid_filename(str(obj.session_id or obj.pk or "report"))
+    return f"report_{session_id}.dat"
 
 
 def require_admin_access(request):
     if not request.user or not request.user.is_authenticated:
         return Response(
-            {"error": "admin authentication required"},
+            {"error": "Please sign in with an admin account to continue."},
             status=status.HTTP_401_UNAUTHORIZED,
         )
 
     if not request.user.is_staff:
         return Response(
-            {"error": "admin privileges required"},
+            {"error": "This action is reserved for staff accounts."},
             status=status.HTTP_403_FORBIDDEN,
         )
 
     return None
 
 
-def get_game_api_bootstrap_token(request):
+def bootstrap_token(request):
     return (
         request.headers.get("X-Game-Api-Key")
         or request.data.get("api_key")
@@ -60,7 +351,7 @@ def get_bearer_token(request):
     return authorization[len(prefix):].strip()
 
 
-def get_refresh_token_from_request(request):
+def request_refresh_token(request):
     return (
         request.data.get("refresh_token")
         or request.headers.get("X-Refresh-Token")
@@ -96,10 +387,20 @@ def build_access_token(session, expires_at):
 def create_token_payload(session):
     access_expires_at = get_access_token_expiry()
     refresh_token = secrets.token_urlsafe(48)
+
+    # Refresh tokens are rotated on every call so a stolen old token quickly
+    # becomes useless, while the mobile client can keep a short-lived session.
     session.refresh_token_hash = hash_token(refresh_token)
     session.expires_at = get_refresh_token_expiry()
     session.revoked_at = None
-    session.save(update_fields=["refresh_token_hash", "expires_at", "revoked_at", "last_used_at"])
+    session.save(
+        update_fields=[
+            "refresh_token_hash",
+            "expires_at",
+            "revoked_at",
+            "last_used_at",
+        ]
+    )
 
     return {
         "access_token": build_access_token(session, access_expires_at),
@@ -142,16 +443,16 @@ def require_bootstrap_token(request):
     expected_token = settings.GAME_API_WRITE_TOKEN
     if not expected_token:
         return Response(
-            {"error": "GAME_API_WRITE_TOKEN is not configured"},
+            {"error": "The game API is not ready to accept write requests yet."},
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
 
-    provided_token = str(get_game_api_bootstrap_token(request) or "")
+    provided_token = str(bootstrap_token(request) or "")
     if secrets.compare_digest(provided_token, expected_token):
         return None
 
     return Response(
-        {"error": "valid bootstrap API key required"},
+        {"error": "A valid bootstrap API key is required to create a session."},
         status=status.HTTP_401_UNAUTHORIZED,
     )
 
@@ -164,7 +465,7 @@ def is_admin_request(request):
     )
 
 
-def require_game_api_access_token(request):
+def require_game_access(request):
     if is_admin_request(request):
         return None
 
@@ -174,50 +475,24 @@ def require_game_api_access_token(request):
         return None
 
     return Response(
-        {"error": "admin authentication or valid access token required"},
+        {"error": "Please provide a valid game access token or sign in as an admin."},
         status=status.HTTP_401_UNAUTHORIZED,
     )
 
 
-def require_game_write_token(request):
-    return require_game_api_access_token(request)
-
-
-def parse_age(age_value):
-    if age_value in (None, ""):
+def parse_birth_year(birth_year_value):
+    if birth_year_value in (None, ""):
         return None
 
     try:
-        return int(age_value)
+        return int(birth_year_value)
     except (TypeError, ValueError):
         return "invalid"
 
 
-def get_doctor_from_request(request):
-    doctor_id = request.data.get("doctor_id")
-    if doctor_id not in (None, ""):
-        try:
-            doctor = Doctor.objects.get(id=int(doctor_id))
-        except (TypeError, ValueError, Doctor.DoesNotExist):
-            return None, str(doctor_id)
-
-        return doctor, None
-
-    doctor_token = (
-        request.data.get("doctor_token")
-        or request.data.get("doctor_key")
-    )
-
+def doctor_from_request(request):
+    doctor_token = request.data.get("doctor_token")
     if not doctor_token:
-        doctor_ids = request.data.get("doctors")
-        if isinstance(doctor_ids, list) and doctor_ids:
-            try:
-                doctor = Doctor.objects.get(id=int(doctor_ids[0]))
-            except (TypeError, ValueError, Doctor.DoesNotExist):
-                return None, str(doctor_ids[0])
-
-            return doctor, None
-
         return None, None
 
     try:
@@ -247,9 +522,12 @@ def create_game_api_token(request):
 
 @api_view(["POST"])
 def refresh_game_api_token(request):
-    refresh_token = str(get_refresh_token_from_request(request) or "").strip()
+    refresh_token = str(request_refresh_token(request) or "").strip()
     if not refresh_token:
-        return Response({"error": "refresh_token required"}, status=400)
+        return Response(
+            {"error": "A refresh_token is required to renew the game session."},
+            status=400,
+        )
 
     refresh_token_hash = hash_token(refresh_token)
     with transaction.atomic():
@@ -260,7 +538,10 @@ def refresh_game_api_token(request):
         )
 
         if not session or not session.is_active():
-            return Response({"error": "refresh token is invalid or expired"}, status=401)
+            return Response(
+                {"error": "This refresh token is invalid or has expired."},
+                status=401,
+            )
 
         payload = create_token_payload(session)
     payload["session_id"] = session.id
@@ -270,7 +551,7 @@ def refresh_game_api_token(request):
 @api_view(['GET', 'POST', 'DELETE'])
 def user_api(request, id=None):
     if request.method == "GET":
-        access_response = require_game_api_access_token(request)
+        access_response = require_game_access(request)
         if access_response:
             return access_response
     elif request.method == "DELETE":
@@ -282,102 +563,101 @@ def user_api(request, id=None):
         if id:
             try:
                 user = User.objects.get(id=id)
-                return Response(UserSerializer(user).data)
+                return Response(user_data(user))
             except User.DoesNotExist:
-                return Response({"error": "User not found"}, status=404)
+                return Response(
+                    {"error": "No user was found for this id."},
+                    status=404,
+                )
 
         token_filter = request.query_params.get("token")
         if token_filter:
             user = User.objects.filter(token=token_filter).order_by("id").first()
             if not user:
-                return Response({"error": "User not found"}, status=404)
-            return Response(UserSerializer(user).data)
+                return Response(
+                    {"error": "No user was found for this token."},
+                    status=404,
+                )
+            return Response(user_data(user))
 
         if not is_admin_request(request):
             return Response(
-                {"error": "filtered lookup required for access token usage"},
+                {
+                    "error": (
+                        "Use a token filter when looking up users "
+                        "from the game client."
+                    )
+                },
                 status=status.HTTP_403_FORBIDDEN,
             )
 
         users = User.objects.all()
-        return Response(UserSerializer(users, many=True).data)
+        return Response([user_data(user) for user in users])
 
     if request.method == 'POST':
-        print("METHOD:", request.method)
-        print("PATH:", request.path)
-        print("DATA:", request.data)
-
-        token_response = require_game_write_token(request)
+        token_response = require_game_access(request)
         if token_response:
-            print("AUTH_ERROR:", getattr(token_response, "data", None))
             return token_response
 
         token = request.data.get("token")
         uuid = request.data.get("uuid")
-        age = parse_age(request.data.get("age"))
-        doctor, invalid_doctor_token = get_doctor_from_request(request)
-        print(
-            "PARSED_VALUES:",
-            {
-                "token": token,
-                "uuid": uuid,
-                "age": age,
-                "doctor": getattr(doctor, "id", None),
-                "invalid_doctor_token": invalid_doctor_token,
-            },
-        )
+        birth_year = parse_birth_year(request.data.get("birth_year"))
+        doctor, invalid_doctor_token = doctor_from_request(request)
 
         if not token:
-            print("POST_USER_ERROR:", "token required")
-            return Response({"error": "token required"}, status=400)
+            return Response(
+                {"error": "A player token is required to create or update a user."},
+                status=400,
+            )
 
-        if age == "invalid":
-            print("POST_USER_ERROR:", "age must be an integer")
-            return Response({"error": "age must be an integer"}, status=400)
+        if birth_year == "invalid":
+            return Response(
+                {"error": "birth_year must be a whole year, for example 2012."},
+                status=400,
+            )
 
         if invalid_doctor_token:
-            print("POST_USER_ERROR:", "doctor token does not exist")
-            return Response({"error": "doctor token does not exist"}, status=404)
+            return Response(
+                {"error": "No doctor matches the doctor_token sent by the client."},
+                status=404,
+            )
 
         if token == "guest":
-            print("USER_BRANCH:", "guest")
+            # Guest mode is intentionally shared for quick trials.
             try:
                 user = User.objects.get(token="guest")
-                print("GUEST_FOUND:", {"id": user.id, "uuid": user.uuid, "age": user.age})
             except User.DoesNotExist:
-                print("GUEST_CREATE_PAYLOAD:", {"token": "guest", "uuid": None, "age": age})
-                user = User.objects.create(token="guest", uuid=None, age=age)
-                print("GUEST_CREATED:", {"id": user.id})
+                user = User.objects.create(
+                    token="guest",
+                    uuid=None,
+                    birth_year=birth_year,
+                )
 
-            if age is not None:
-                user.age = age
-                user.save(update_fields=["age"])
-                print("GUEST_AGE_UPDATED:", {"id": user.id, "age": user.age})
+            if birth_year is not None:
+                user.birth_year = birth_year
+                user.save(update_fields=["birth_year"])
 
             if doctor:
-                print("GUEST_ADD_DOCTOR:", {"user_id": user.id, "doctor_id": doctor.id})
                 user.doctors.add(doctor)
 
-            response_data = UserSerializer(user).data
-            print("RESPONSE_DATA:", response_data)
+            response_data = user_data(user)
             return Response(response_data)
 
         if not uuid:
-            print("POST_USER_ERROR:", "uuid required")
-            return Response({"error": "uuid required"}, status=400)
+            return Response(
+                {"error": "A uuid is required for non-guest players."},
+                status=400,
+            )
 
         user = User.objects.filter(token=token).order_by("id").first()
         created = user is None
-        print("USER_LOOKUP:", {"created": created, "existing_user_id": getattr(user, "id", None)})
 
         if created:
-            print("USER_CREATE_PAYLOAD:", {"token": token, "uuid": uuid, "age": age})
             user = User.objects.create(
                 token=token,
                 uuid=uuid,
-                age=age,
+                birth_year=birth_year,
             )
-            print("USER_CREATED:", {"id": user.id})
         else:
             fields_to_update = []
 
@@ -385,20 +665,17 @@ def user_api(request, id=None):
                 user.uuid = uuid
                 fields_to_update.append("uuid")
 
-            if age is not None and user.age != age:
-                user.age = age
-                fields_to_update.append("age")
+            if birth_year is not None and user.birth_year != birth_year:
+                user.birth_year = birth_year
+                fields_to_update.append("birth_year")
 
             if fields_to_update:
-                print("USER_UPDATE_FIELDS:", {"id": user.id, "fields": fields_to_update})
                 user.save(update_fields=fields_to_update)
 
         if doctor:
-            print("USER_ADD_DOCTOR:", {"user_id": user.id, "doctor_id": doctor.id})
             user.doctors.add(doctor)
 
-        response_data = UserSerializer(user).data
-        print("RESPONSE_DATA:", response_data)
+        response_data = user_data(user)
         return Response(response_data)
 
     if request.method == 'DELETE':
@@ -407,12 +684,15 @@ def user_api(request, id=None):
             user.delete()
             return Response({"message": "User deleted"})
         except User.DoesNotExist:
-            return Response({"error": "User not found"}, status=404)
+            return Response(
+                {"error": "No user was found for this id."},
+                status=404,
+            )
 
 @api_view(['GET', 'POST', 'DELETE'])
 def doctor_api(request, id=None):
     if request.method == "GET":
-        access_response = require_game_api_access_token(request)
+        access_response = require_game_access(request)
         if access_response:
             return access_response
     else:
@@ -424,31 +704,61 @@ def doctor_api(request, id=None):
         if id:
             try:
                 obj = Doctor.objects.get(id=id)
-                return Response(DoctorSerializer(obj).data)
+                return Response(doctor_data(obj))
             except Doctor.DoesNotExist:
-                return Response({"error": "Doctor not found"}, status=404)
+                return Response(
+                    {"error": "No doctor was found for this id."},
+                    status=404,
+                )
 
         token_filter = request.query_params.get("token")
         if token_filter:
             obj = Doctor.objects.filter(token=token_filter).first()
             if not obj:
-                return Response({"error": "Doctor not found"}, status=404)
-            return Response(DoctorSerializer(obj).data)
+                return Response(
+                    {"error": "No doctor was found for this token."},
+                    status=404,
+                )
+            return Response(doctor_data(obj))
 
         if not is_admin_request(request):
             return Response(
-                {"error": "filtered lookup required for access token usage"},
+                {
+                    "error": (
+                        "Use a token filter when looking up doctors "
+                        "from the game client."
+                    )
+                },
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        return Response(DoctorSerializer(Doctor.objects.all(), many=True).data)
+        return Response([doctor_data(obj) for obj in Doctor.objects.all()])
 
     if request.method == 'POST':
-        serializer = DoctorSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors)
+        required_fields = ("last_name", "first_name", "token", "email")
+        missing_fields = [
+            field for field in required_fields if not request.data.get(field)
+        ]
+
+        if missing_fields:
+            return Response(
+                {field: ["This field is required."] for field in missing_fields},
+                status=400,
+            )
+
+        try:
+            obj = Doctor.objects.create(
+                last_name=request.data.get("last_name"),
+                first_name=request.data.get("first_name"),
+                token=request.data.get("token"),
+                email=request.data.get("email"),
+            )
+        except IntegrityError:
+            return Response(
+                {"error": "A doctor already exists with this token or email."},
+                status=400,
+            )
+        return Response(doctor_data(obj))
 
     if request.method == 'DELETE':
         try:
@@ -456,13 +766,16 @@ def doctor_api(request, id=None):
             obj.delete()
             return Response({"message": "Doctor deleted"})
         except Doctor.DoesNotExist:
-            return Response({"error": "Doctor not found"}, status=404)
+            return Response(
+                {"error": "No doctor was found for this id."},
+                status=404,
+            )
 
 
 @api_view(['GET', 'POST', 'DELETE'])
 def seed_api(request, id=None):
     if request.method == "POST":
-        token_response = require_game_write_token(request)
+        token_response = require_game_access(request)
         if token_response:
             return token_response
     else:
@@ -474,17 +787,30 @@ def seed_api(request, id=None):
         if id:
             try:
                 obj = SeedLevel.objects.get(id=id)
-                return Response(SeedLevelSerializer(obj).data)
+                return Response(seed_level_data(obj))
             except SeedLevel.DoesNotExist:
-                return Response({"error": "Seed not found"}, status=404)
-        return Response(SeedLevelSerializer(SeedLevel.objects.all(), many=True).data)
+                return Response(
+                    {"error": "No seed level was found for this id."},
+                    status=404,
+                )
+        return Response([seed_level_data(obj) for obj in SeedLevel.objects.all()])
 
     if request.method == 'POST':
-        serializer = SeedLevelSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors)
+        if not request.data.get("name"):
+            return Response({"name": ["This field is required."]}, status=400)
+
+        existing_seed = SeedLevel.objects.filter(name=request.data.get("name")).first()
+        if existing_seed:
+            return Response(seed_level_data(existing_seed))
+
+        if not request.data.get("file"):
+            return Response({"file": ["No file was submitted."]}, status=400)
+
+        obj = SeedLevel.objects.create(
+            name=request.data.get("name"),
+            file=request.data.get("file"),
+        )
+        return Response(seed_level_data(obj))
 
     if request.method == 'DELETE':
         try:
@@ -492,104 +818,11 @@ def seed_api(request, id=None):
             obj.delete()
             return Response({"message": "Seed deleted"})
         except SeedLevel.DoesNotExist:
-            return Response({"error": "Seed not found"}, status=404)
-
-@api_view(['GET', 'POST', 'DELETE'])
-def doctor_report_api(request, id=None):
-    if request.method in {"GET", "DELETE"}:
-        admin_response = require_admin_access(request)
-        if admin_response:
-            return admin_response
-
-    if request.method == 'GET':
-        if id:
-            try:
-                obj = DoctorReport.objects.get(id=id)
-                return Response(DoctorReportSerializer(obj).data)
-            except DoctorReport.DoesNotExist:
-                return Response({"error": "Doctor report not found"}, status=404)
-        return Response(DoctorReportSerializer(DoctorReport.objects.all(), many=True).data)
-
-    if request.method == 'POST':
-        print("DATA:", request.data, flush=True)
-        print("FILES:", request.FILES, flush=True)
-        print("FILE_KEYS:", list(request.FILES.keys()), flush=True)
-
-        token_response = require_game_write_token(request)
-        if token_response:
-            return token_response
-
-        serializer = DoctorReportSerializer(data=request.data)
-        is_valid = serializer.is_valid()
-        print("IS_VALID:", is_valid, flush=True)
-        print("ERRORS:", serializer.errors, flush=True)
-        if is_valid:
-            try:
-                validated_data = serializer.validated_data
-                print("VALIDATED_KEYS:", list(validated_data.keys()), flush=True)
-                print("VALIDATED_USER:", validated_data.get("user"), flush=True)
-                print("VALIDATED_SESSION_ID:", validated_data.get("session_id"), flush=True)
-                print("VALIDATED_SEED:", validated_data.get("seed"), flush=True)
-                print("VALIDATED_FILE:", validated_data.get("file"), flush=True)
-                print("VALIDATED_DOCTORS:", validated_data.get("doctors"), flush=True)
-                incoming_file = validated_data.get("file")
-                print(
-                    "INCOMING_FILE:",
-                    incoming_file.name if incoming_file else None,
-                    flush=True,
-                )
-            except Exception as e:
-                import traceback
-
-                traceback.print_exc()
-                print("DOCTOR_REPORT_VALIDATED_DATA_ERROR:", repr(e), flush=True)
-                raise
-            try:
-                obj, created = DoctorReport.objects.update_or_create(
-                    user=validated_data["user"],
-                    session_id=validated_data["session_id"],
-                    defaults={
-                        "seed": validated_data["seed"],
-                        "file": validated_data["file"],
-                    },
-                )
-                print("UPSERT_CREATED:", created, flush=True)
-                print("OBJ_ID:", obj.id, flush=True)
-                print("SETTING_DOCTORS:", validated_data["doctors"], flush=True)
-                print("DOCTORS_SOURCE:", validated_data.get("doctors"), flush=True)
-                obj.doctors.set(validated_data["doctors"])
-            except Exception as e:
-                import traceback
-
-                traceback.print_exc()
-                print("DOCTOR_REPORT_ERROR:", repr(e), flush=True)
-                raise
-            print("SAVED_ID:", obj.id, flush=True)
-            print("SAVED_FILE:", obj.file.name if obj.file else None, flush=True)
-            print(
-                "UPDATED_FILE_AFTER_SAVE:",
-                obj.file.name if obj.file else None,
-                flush=True,
+            return Response(
+                {"error": "No seed level was found for this id."},
+                status=404,
             )
-            try:
-                response_data = DoctorReportSerializer(obj).data
-                print("RESPONSE_DATA:", response_data, flush=True)
-            except Exception as e:
-                import traceback
 
-                traceback.print_exc()
-                print("DOCTOR_REPORT_RESPONSE_ERROR:", repr(e), flush=True)
-                raise
-            return Response(response_data)
-        return Response(serializer.errors, status=400)
-
-    if request.method == 'DELETE':
-        try:
-            obj = DoctorReport.objects.get(id=id)
-            obj.delete()
-            return Response({"message": "Doctor report deleted"})
-        except DoctorReport.DoesNotExist:
-            return Response({"error": "Doctor report not found"}, status=404)
 
 @api_view(['GET', 'POST', 'DELETE'])
 def full_report_api(request, id=None):
@@ -602,49 +835,109 @@ def full_report_api(request, id=None):
         if id:
             try:
                 obj = FullReport.objects.get(id=id)
-                return Response(FullReportSerializer(obj).data)
+                return Response(full_report_data(obj))
             except FullReport.DoesNotExist:
-                return Response({"error": "Full report not found"}, status=404)
-        return Response(FullReportSerializer(FullReport.objects.all(), many=True).data)
+                return Response(
+                    {"error": "No full report was found for this id."},
+                    status=404,
+                )
+        return Response([full_report_data(obj) for obj in FullReport.objects.all()])
 
     if request.method == 'POST':
-        print("DATA:", request.data)
-        print("FILES:", request.FILES)
-        print("FILE_KEYS:", list(request.FILES.keys()))
-
-        token_response = require_game_write_token(request)
+        token_response = require_game_access(request)
         if token_response:
             return token_response
 
-        serializer = FullReportSerializer(data=request.data)
-        is_valid = serializer.is_valid()
-        print("IS_VALID:", is_valid)
-        print("ERRORS:", serializer.errors)
-        if is_valid:
-            print("VALIDATED_DATA:", serializer.validated_data)
-            incoming_file = serializer.validated_data.get("file")
-            print(
-                "INCOMING_FILE:",
-                incoming_file.name if incoming_file else None,
-                flush=True,
+        if not request.data.get("user"):
+            return Response({"user": ["This field is required."]}, status=400)
+
+        if not request.data.get("session_id"):
+            return Response({"session_id": ["This field is required."]}, status=400)
+
+        if not request.data.get("file"):
+            return Response({"file": ["No file was submitted."]}, status=400)
+
+        try:
+            user = User.objects.get(id=int(request.data.get("user")))
+        except (TypeError, ValueError, User.DoesNotExist):
+            return Response(
+                {"error": "No user was found for this id."},
+                status=404,
             )
-            obj, created = FullReport.objects.update_or_create(
-                user=serializer.validated_data["user"],
-                session_id=serializer.validated_data["session_id"],
-                defaults={
-                    "file": serializer.validated_data["file"],
-                },
+
+        seed_levels, seed_error = request_seed_levels(request)
+        if seed_error == "invalid":
+            return Response(
+                {"error": "seed_levels must contain seed level ids."},
+                status=400,
             )
-            print("UPSERT_CREATED:", created)
-            print("SAVED_ID:", obj.id)
-            print("SAVED_FILE:", obj.file.name if obj.file else None)
-            print(
-                "UPDATED_FILE_AFTER_SAVE:",
-                obj.file.name if obj.file else None,
-                flush=True,
+
+        if seed_error == "missing":
+            return Response(
+                {"error": "No seed level was found for one of these ids."},
+                status=404,
             )
-            return Response(FullReportSerializer(obj).data)
-        return Response(serializer.errors, status=400)
+
+        uploaded_file = request.data.get("file")
+        uploaded_blocks, upload_error = uploaded_dat_blocks(uploaded_file)
+        if upload_error == "invalid":
+            return Response(
+                {"file": ["The uploaded file must be a valid line-by-line .dat report."]},
+                status=400,
+            )
+
+        app_version_code = request.data.get("app_version_code")
+        if app_version_code in (None, ""):
+            app_version_code = None
+        else:
+            try:
+                app_version_code = int(app_version_code)
+            except (TypeError, ValueError):
+                return Response(
+                    {"app_version_code": ["A valid integer is required."]},
+                    status=400,
+                )
+
+        with transaction.atomic():
+            obj = (
+                FullReport.objects.select_for_update()
+                .filter(user=user, session_id=request.data.get("session_id"))
+                .first()
+            )
+
+            if not obj:
+                obj = FullReport(
+                    user=user,
+                    session_id=request.data.get("session_id"),
+                )
+
+            current_blocks, current_error = existing_dat_blocks(obj)
+            if current_error == "invalid":
+                return Response(
+                    {"file": ["The existing report file is not a valid .dat report."]},
+                    status=400,
+                )
+
+            obj.app_version = request.data.get("app_version", "")
+            obj.app_version_code = app_version_code
+            obj.level_generation_version = request.data.get(
+                "level_generation_version",
+                "",
+            )
+            obj.client_platform = request.data.get("client_platform", "")
+
+            if not obj.pk:
+                obj.save()
+
+            try:
+                append_report_dat(obj, len(current_blocks), uploaded_blocks)
+            except ValueError as exc:
+                return Response({"file": [str(exc)]}, status=400)
+
+            obj.save()
+            obj.seed_levels.add(*seed_levels)
+
+        return Response(full_report_data(obj))
 
     if request.method == 'DELETE':
         try:
@@ -652,4 +945,54 @@ def full_report_api(request, id=None):
             obj.delete()
             return Response({"message": "Full report deleted"})
         except FullReport.DoesNotExist:
-            return Response({"error": "Full report not found"}, status=404)
+            return Response(
+                {"error": "No full report was found for this id."},
+                status=404,
+            )
+
+
+@api_view(["GET"])
+def full_report_chart_api(request, id):
+    admin_response = require_admin_access(request)
+    if admin_response:
+        return admin_response
+
+    try:
+        obj = FullReport.objects.get(id=id)
+    except FullReport.DoesNotExist:
+        return Response(
+            {"error": "No full report was found for this id."},
+            status=404,
+        )
+
+    return full_report_chart_response(obj)
+
+
+def full_report_chart_response(obj):
+    if not obj.file:
+        return Response(
+            {"error": "This full report has no file attached."},
+            status=404,
+        )
+
+    try:
+        with obj.file.open("r") as file_handle:
+            chart = generate_full_report_chart(file_handle)
+    except FileNotFoundError:
+        return Response(
+            {"error": "The full report file could not be found."},
+            status=404,
+        )
+    except (UnicodeDecodeError, ReportChartError) as exc:
+        if isinstance(exc, ReportChartDependencyError):
+            return Response(
+                {"error": str(exc)},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        return Response(
+            {"error": f"The full report file could not be converted to a chart: {exc}"},
+            status=400,
+        )
+
+    return HttpResponse(chart.getvalue(), content_type="image/png")

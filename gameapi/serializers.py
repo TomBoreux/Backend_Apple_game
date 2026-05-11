@@ -4,7 +4,6 @@ from .models import (
     User,
     Doctor,
     SeedLevel,
-    DoctorReport,
     FullReport,
 )
 
@@ -42,7 +41,7 @@ class UserSerializer(serializers.ModelSerializer):
             "id",
             "token",
             "uuid",
-            "age",
+            "birth_year",
             "doctors",
             "latest_doctor_id",
             "latest_doctor_token",
@@ -62,23 +61,26 @@ class SeedLevelSerializer(serializers.ModelSerializer):
         fields = ("id", "name", "file")
 
 
-class DoctorReportSerializer(serializers.ModelSerializer):
+class FullReportSerializer(serializers.ModelSerializer):
     file = serializers.FileField()
-    doctors = serializers.PrimaryKeyRelatedField(
+    seed_levels = serializers.PrimaryKeyRelatedField(
         many=True,
-        queryset=Doctor.objects.all(),
+        queryset=SeedLevel.objects.all(),
+        required=False,
     )
 
     class Meta:
-        model = DoctorReport
-        fields = ("id", "user", "session_id", "seed", "file", "date", "doctors")
-        validators = []
-
-
-class FullReportSerializer(serializers.ModelSerializer):
-    file = serializers.FileField()
-
-    class Meta:
         model = FullReport
-        fields = ("id", "user", "session_id", "file", "date")
+        fields = (
+            "id",
+            "user",
+            "session_id",
+            "file",
+            "date",
+            "seed_levels",
+            "app_version",
+            "app_version_code",
+            "level_generation_version",
+            "client_platform",
+        )
         validators = []
