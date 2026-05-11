@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AppleGame - Présentation du jeu</title>
+    <style>
+        :root {
+            color-scheme: light;
+            --ink: #1f2933;
+            --muted: #52616b;
+            --line: #d9e2ec;
+            --bg: #f8fafc;
+            --panel: #ffffff;
+            --accent: #006d77;
+            --accent-soft: #e0f2f1;
+            --accent-strong: #004f56;
+            --warm: #f4a261;
+            --warm-soft: #fff3e3;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: Arial, Helvetica, sans-serif;
+            line-height: 1.6;
+            color: var(--ink);
+            background: var(--bg);
+        }
+
+        main {
+            width: min(1080px, calc(100% - 32px));
+            margin: 0 auto;
+            padding: 32px 0 56px;
+        }
+
+        .hero {
+            display: grid;
+            grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
+            gap: 24px;
+            align-items: stretch;
+            margin-bottom: 24px;
+        }
+
+        article,
+        .summary {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 8px;
+        }
+
+        article {
+            padding: clamp(24px, 4vw, 44px);
+        }
+
+        .summary {
+            padding: 24px;
+        }
+
+        h1,
+        h2,
+        h3 {
+            line-height: 1.2;
+            margin: 0;
+        }
+
+        h1 {
+            max-width: 780px;
+            font-size: clamp(2.2rem, 5vw, 4rem);
+        }
+
+        h2 {
+            margin-top: 36px;
+            font-size: 1.45rem;
+            color: var(--accent);
+        }
+
+        h3 {
+            margin-top: 20px;
+            font-size: 1.05rem;
+        }
+
+        p,
+        ul,
+        ol {
+            margin: 12px 0 0;
+        }
+
+        ul,
+        ol {
+            padding-left: 22px;
+        }
+
+        li + li {
+            margin-top: 6px;
+        }
+
+        a {
+            color: var(--accent);
+        }
+
+        .eyebrow {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 14px;
+            color: var(--accent-strong);
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-size: 0.78rem;
+        }
+
+        .lead {
+            max-width: 820px;
+            margin-top: 18px;
+            font-size: 1.12rem;
+            color: var(--muted);
+        }
+
+        .updated {
+            color: var(--muted);
+            margin-top: 10px;
+        }
+
+        .pill-list,
+        .stat-list {
+            display: grid;
+            gap: 10px;
+            padding: 0;
+            list-style: none;
+        }
+
+        .pill-list {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            margin-top: 24px;
+        }
+
+        .pill-list li,
+        .stat-list li {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 12px 14px;
+            background: #ffffff;
+        }
+
+        .pill-list strong,
+        .stat-list strong {
+            display: block;
+            color: var(--accent-strong);
+        }
+
+        .summary h2 {
+            margin-top: 0;
+            font-size: 1.2rem;
+        }
+
+        .summary p {
+            color: var(--muted);
+        }
+
+        .callout {
+            margin-top: 24px;
+            border-left: 4px solid var(--warm);
+            background: var(--warm-soft);
+            padding: 16px 18px;
+            border-radius: 0 8px 8px 0;
+        }
+
+        .section-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 16px;
+            margin-top: 16px;
+        }
+
+        .mini-card {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 18px;
+            background: #ffffff;
+        }
+
+        .mini-card h3 {
+            margin-top: 0;
+            color: var(--accent-strong);
+        }
+
+        .footer-links {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px 18px;
+            margin-top: 28px;
+            padding-top: 20px;
+            border-top: 1px solid var(--line);
+        }
+
+        @media (max-width: 820px) {
+            .hero,
+            .section-grid,
+            .pill-list {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <main>
+        <div class="hero">
+            <article>
+                <span class="eyebrow">Jeu cognitif accompagné</span>
+                <h1>AppleGame</h1>
+                <p class="lead">
+                    AppleGame est une application ludique conçue pour proposer
+                    des sessions de jeu structurées autour de la mémoire, de
+                    l'orientation, de l'attention et du suivi de parcours. Elle
+                    permet de jouer dans un cadre clair, de conserver des traces de
+                    session et de partager des rapports avec les professionnels
+                    autorisés lorsque ce suivi est configuré.
+                </p>
+                <p class="updated">Dernière mise à jour : 29 avril 2026</p>
+
+                <ul class="pill-list" aria-label="Points principaux">
+                    <li>
+                        <strong>But du jeu</strong>
+                        Stimuler des capacités cognitives dans une expérience simple et répétable.
+                    </li>
+                    <li>
+                        <strong>Sessions suivies</strong>
+                        Chaque partie peut produire un rapport associé à une session.
+                    </li>
+                    <li>
+                        <strong>Niveaux reproductibles</strong>
+                        Les contenus de niveau reposent sur des seeds afin de garder une base comparable.
+                    </li>
+                    <li>
+                        <strong>Suivi encadre</strong>
+                        Les rapports médecin sont accessibles uniquement aux personnes autorisées.
+                    </li>
+                </ul>
+            </article>
+
+            <aside class="summary" aria-label="Resume">
+                <h2>En bref</h2>
+                <ul class="stat-list">
+                    <li>
+                        <strong>Public</strong>
+                        Joueurs, aidants, encadrants et professionnels associés au suivi.
+                    </li>
+                    <li>
+                        <strong>Format</strong>
+                        Sessions de jeu courtes, rejouables et rattachées à un profil utilisateur.
+                    </li>
+                    <li>
+                        <strong>Donnees</strong>
+                        Identifiant utilisateur, année de naissance facultative, rapports et informations techniques.
+                    </li>
+                    <li>
+                        <strong>Important</strong>
+                        Le jeu accompagne le suivi, mais ne remplace pas un avis médical.
+                    </li>
+                </ul>
+            </aside>
+        </div>
+
+        <article>
+            <h2>Pourquoi ce jeu existe</h2>
+            <p>
+                L'objectif d'AppleGame est de transformer des exercices
+                cognitifs en une expérience plus accessible qu'une évaluation
+                formelle. Le jeu propose un environnement dans lequel l'utilisateur
+                peut se concentrer sur une tâche concrète, avancer dans une session
+                et terminer avec des informations exploitables par l'équipe qui
+                l'accompagne.
+            </p>
+            <p>
+                Le projet cherche à soutenir trois besoins : encourager une
+                activité régulière, recueillir des observations de session de
+                manière structurée et faciliter le partage d'informations avec les
+                professionnels autorisés. Il ne s'agit pas de poser un diagnostic,
+                mais de fournir un support ludique et un historique de jeu utile au
+                suivi.
+            </p>
+
+            <h2>Le principe de jeu</h2>
+            <p>
+                Une partie est organisée comme une session. L'utilisateur entre
+                dans un niveau, suit les consignes du jeu, interagit avec
+                l'environnement proposé et progresse jusqu'à la fin de l'exercice.
+                Les niveaux sont chargés à partir de fichiers de seed : cela permet
+                de générer ou retrouver des configurations de jeu identifiées, avec
+                un nom et un fichier associé.
+            </p>
+            <div class="section-grid">
+                <section class="mini-card">
+                    <h3>Mémoire</h3>
+                    <p>
+                        Le jeu peut solliciter la mémorisation d'éléments, de
+                        positions, d'étapes ou de repères utiles pour continuer la
+                        session.
+                    </p>
+                </section>
+                <section class="mini-card">
+                    <h3>Attention</h3>
+                    <p>
+                        Le joueur doit rester attentif aux consignes, aux éléments
+                        visibles et aux changements qui apparaissent pendant la
+                        partie.
+                    </p>
+                </section>
+                <section class="mini-card">
+                    <h3>Orientation</h3>
+                    <p>
+                        Les niveaux peuvent servir de support à des exercices de
+                        repérage, de navigation et de compréhension d'un parcours.
+                    </p>
+                </section>
+                <section class="mini-card">
+                    <h3>Régularité</h3>
+                    <p>
+                        Le format en sessions permet de rejouer, de comparer les
+                        expériences et de conserver une trace chronologique.
+                    </p>
+                </section>
+            </div>
+
+            <h2>Déroulement d'une session</h2>
+            <ol>
+                <li>L'application identifie l'utilisateur et, si nécessaire, l'appareil utilisé.</li>
+                <li>Un niveau est sélectionné à partir d'une seed disponible.</li>
+                <li>Le joueur réalise la session en suivant les objectifs présentés dans le jeu.</li>
+                <li>Un rapport de session peut être généré à la fin de la partie.</li>
+                <li>Lorsque le suivi est configuré, un rapport destiné au médecin peut être associé aux professionnels autorisés.</li>
+            </ol>
+
+            <h2>Ce que le jeu observe</h2>
+            <p>
+                Les rapports produits par l'application peuvent contenir les
+                informations nécessaires à la compréhension de la session : fichier
+                de rapport, identifiant de session, niveau utilisé, version de
+                l'application, version de génération des niveaux et plateforme
+                cliente. Ces éléments servent à replacer une partie dans son
+                contexte technique et à éviter de comparer des sessions qui ne
+                reposeraient pas sur la même version du jeu.
+            </p>
+
+            <h2>Suivi par les professionnels</h2>
+            <p>
+                AppleGame prévoit un lien entre un utilisateur et un ou
+                plusieurs médecins. Lorsqu'un tel suivi est configuré, certains
+                rapports peuvent être rattachés aux professionnels concernés. Ce
+                mécanisme aide l'équipe autorisée à consulter les sessions utiles
+                sans exposer les données à des personnes non concernées.
+            </p>
+            <p>
+                Les rapports ne sont pas présentés comme un verdict automatique. Ils
+                sont un support de lecture : ils peuvent aider à discuter d'une
+                évolution, d'une difficulté observée ou de la manière dont une
+                session s'est déroulée.
+            </p>
+
+            <h2>Confidentialité et sécurité</h2>
+            <p>
+                Le service associe au jeu utilise des jetons d'authentification pour
+                protéger les écritures vers l'API. Les données ne sont pas vendues.
+                Les accès aux rapports sont limités aux administrateurs du service
+                et aux professionnels autorisés lorsque cela est nécessaire au
+                fonctionnement ou au suivi prévu.
+            </p>
+            <div class="callout">
+                <strong>Note importante :</strong>
+                AppleGame est un outil d'accompagnement et de suivi ludique. Il
+                ne remplace pas une consultation, un diagnostic, une évaluation
+                clinique ou les recommandations d'un professionnel de santé.
+            </div>
+
+            <h2>À qui s'adresse AppleGame ?</h2>
+            <ul>
+                <li>aux utilisateurs qui souhaitent réaliser des sessions de jeu simples et encadrées ;</li>
+                <li>aux aidants qui veulent soutenir une activité régulière ;</li>
+                <li>aux professionnels autorisés qui souhaitent disposer de rapports de session ;</li>
+                <li>à l'équipe du projet, pour maintenir les niveaux, les versions et la qualité du service.</li>
+            </ul>
+
+            <h2>Contact</h2>
+            <p>
+                Pour toute question concernant le projet AppleGame, contactez
+                l'équipe responsable aux adresses suivantes :
+                <a href="mailto:eva.kabelis@gmail.com">eva.kabelis@gmail.com</a>,
+                <a href="mailto:martinlempire@gmail.com">martinlempire@gmail.com</a>,
+                <a href="mailto:matteo.drogo2005@gmail.com">matteo.drogo2005@gmail.com</a>
+                et
+                <a href="mailto:tom.boreux@gmail.com">tom.boreux@gmail.com</a>.
+            </p>
+
+            <nav class="footer-links" aria-label="Liens utiles">
+                <a href="/privacy/">Règles de confidentialité</a>
+                <a href="/account-deletion/">Suppression de compte et des données</a>
+            </nav>
+        </article>
+    </main>
+</body>
+</html>

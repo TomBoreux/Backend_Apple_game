@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 import os
 from pathlib import Path
+from django.core.exceptions import ImproperlyConfigured
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -61,17 +62,13 @@ def env_list(key, default=""):
 load_dotenv()
 
 
-SECRET_KEY = env(
-    "DJANGO_SECRET_KEY",
-    "django-insecure-9^==ugmn#=2)p0%ae6-$71jzjm0rv0fg_ag$-!b!i+$!5#&iuc",
-)
+SECRET_KEY = env("DJANGO_SECRET_KEY", "")
 
-DEBUG = env_bool("DJANGO_DEBUG", default=True)
+DEBUG = False
+IS_PRODUCTION = not DEBUG
 
-ALLOWED_HOSTS = env_list(
-    "DJANGO_ALLOWED_HOSTS",
-    "localhost,127.0.0.1",
-)
+ALLOWED_HOSTS = ["alzheimer.magellan.fpms.ac.be"]
+CSRF_TRUSTED_ORIGINS = env_list("DJANGO_CSRF_TRUSTED_ORIGINS", "")
 
 
 INSTALLED_APPS = [
@@ -88,6 +85,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -128,8 +126,16 @@ DATABASES = {
         "PASSWORD": env("POSTGRES_PASSWORD", ""),
         "HOST": env("POSTGRES_HOST", "localhost"),
         "PORT": env("POSTGRES_PORT", "5432"),
+        "CONN_MAX_AGE": env_int(
+            "POSTGRES_CONN_MAX_AGE",
+            60 if IS_PRODUCTION else 0,
+        ),
     }
 }
+
+postgres_sslmode = env("POSTGRES_SSLMODE", "").strip()
+if postgres_sslmode:
+    DATABASES["default"]["OPTIONS"] = {"sslmode": postgres_sslmode}
 
 
 AUTH_PASSWORD_VALIDATORS = [
@@ -154,7 +160,9 @@ USE_I18N = True
 USE_TZ = True
 
 
-STATIC_URL = "static/"
+STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
@@ -162,11 +170,18 @@ MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 
+default_authentication_classes = [
+    "rest_framework.authentication.SessionAuthentication",
+]
+
+if env_bool("DJANGO_ENABLE_BASIC_AUTH", default=DEBUG):
+    default_authentication_classes.append(
+        "rest_framework.authentication.BasicAuthentication"
+    )
+
+
 REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework.authentication.SessionAuthentication",
-        "rest_framework.authentication.BasicAuthentication",
-    ],
+    "DEFAULT_AUTHENTICATION_CLASSES": default_authentication_classes,
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
     ],
@@ -184,8 +199,47 @@ GAME_API_REFRESH_TOKEN_LIFETIME_SECONDS = env_int(
 )
 
 
-SESSION_COOKIE_SECURE = not DEBUG
-CSRF_COOKIE_SECURE = not DEBUG
+SESSION_COOKIE_SECURE = IS_PRODUCTION
+CSRF_COOKIE_SECURE = IS_PRODUCTION
+SESSION_COOKIE_HTTPONLY = True
+CSRF_COOKIE_HTTPONLY = env_bool("DJANGO_CSRF_COOKIE_HTTPONLY", default=False)
+SESSION_COOKIE_SAMESITE = env("DJANGO_SESSION_COOKIE_SAMESITE", "Lax")
+CSRF_COOKIE_SAMESITE = env("DJANGO_CSRF_COOKIE_SAMESITE", "Lax")
+
+SECURE_SSL_REDIRECT = env_bool("DJANGO_SECURE_SSL_REDIRECT", default=IS_PRODUCTION)
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+SECURE_HSTS_SECONDS = env_int(
+    "DJANGO_SECURE_HSTS_SECONDS",
+    31536000 if IS_PRODUCTION else 0,
+)
+SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool(
+    "DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS",
+    default=IS_PRODUCTION,
+)
+SECURE_HSTS_PRELOAD = env_bool(
+    "DJANGO_SECURE_HSTS_PRELOAD",
+    default=IS_PRODUCTION,
+)
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = "same-origin"
 X_FRAME_OPTIONS = "DENY"
+SECURE_CROSS_ORIGIN_OPENER_POLICY = "same-origin"
+
+
+if not SECRET_KEY:
+    raise ImproperlyConfigured("DJANGO_SECRET_KEY must be set.")
+
+if IS_PRODUCTION and len(SECRET_KEY) < 50:
+    raise ImproperlyConfigured(
+        "DJANGO_SECRET_KEY is too short for production use."
+    )
+
+if IS_PRODUCTION and not ALLOWED_HOSTS:
+    raise ImproperlyConfigured(
+        "DJANGO_ALLOWED_HOSTS must be configured in production."
+    )
+
+if IS_PRODUCTION and not GAME_API_WRITE_TOKEN:
+    raise ImproperlyConfigured(
+        "GAME_API_WRITE_TOKEN must be configured in production."
+    )
