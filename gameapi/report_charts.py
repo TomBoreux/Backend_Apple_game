@@ -151,6 +151,278 @@ def _parse_report(file_handle):
     ]
 
 
+def parse_full_report(file_handle):
+    return _parse_report(file_handle)
+
+
+def distance_between(first_point, second_point):
+    return math.sqrt(
+        (second_point[0] - first_point[0]) ** 2
+        + (second_point[1] - first_point[1]) ** 2
+    )
+
+
+def path_distance(points):
+    if len(points) < 2:
+        return 0
+
+    return sum(
+        distance_between(points[index], points[index + 1])
+        for index in range(len(points) - 1)
+    )
+
+
+def level_stats(level, level_index):
+    player_positions = level["player_positions"]
+    traveled_distance = path_distance(player_positions)
+    target_distance = distance_between(level["basket"], level["apple_tree"])
+    tree_count = len(level["trees"])
+    malus_time = 6 + 2 * tree_count
+    playable_time = max(level["time_spent"] - malus_time, 0)
+    expected_distance = playable_time * 2
+    speed = traveled_distance / playable_time if playable_time else 0
+    movement_ratio = (
+        traveled_distance / expected_distance
+        if expected_distance
+        else 0
+    )
+
+    return {
+        "level": level_index + 1,
+        "seed": level["seed"],
+        "time_spent": level["time_spent"],
+        "playable_time": playable_time,
+        "malus_time": malus_time,
+        "basket": level["basket"],
+        "apple_tree": level["apple_tree"],
+        "visual": level["visual"],
+        "has_visual": level["visual"] is not None,
+        "tree_count": tree_count,
+        "position_count": len(player_positions),
+        "start_position": player_positions[0] if player_positions else None,
+        "end_position": player_positions[-1] if player_positions else None,
+        "traveled_distance": traveled_distance,
+        "target_distance": target_distance,
+        "expected_distance": expected_distance,
+        "speed": speed,
+        "movement_ratio": movement_ratio,
+        "movement_percent": movement_ratio * 100,
+        "final_distance": level["final_distance"],
+        "score": level["score"],
+        "is_interrupted": level["final_distance"] is None or level["score"] is None,
+    }
+
+
+def average(values):
+    return sum(values) / len(values) if values else None
+
+
+def full_report_stats(levels):
+    per_level = [
+        level_stats(level, level_index)
+        for level_index, level in enumerate(levels)
+    ]
+    completed_levels = [
+        level for level in per_level
+        if not level["is_interrupted"]
+    ]
+
+    return {
+        "level_count": len(per_level),
+        "completed_level_count": len(completed_levels),
+        "interrupted_level_count": len(per_level) - len(completed_levels),
+        "total_time_spent": sum(level["time_spent"] for level in per_level),
+        "total_playable_time": sum(level["playable_time"] for level in per_level),
+        "total_traveled_distance": sum(
+            level["traveled_distance"]
+            for level in per_level
+        ),
+        "average_time_spent": average(
+            [level["time_spent"] for level in per_level]
+        ),
+        "average_playable_time": average(
+            [level["playable_time"] for level in per_level]
+        ),
+        "average_traveled_distance": average(
+            [level["traveled_distance"] for level in per_level]
+        ),
+        "average_final_distance": average(
+            [
+                level["final_distance"]
+                for level in completed_levels
+                if level["final_distance"] is not None
+            ]
+        ),
+        "average_score": average(
+            [
+                level["score"]
+                for level in completed_levels
+                if level["score"] is not None
+            ]
+        ),
+        "average_movement_percent": average(
+            [level["movement_percent"] for level in per_level]
+        ),
+        "average_speed": average(
+            [level["speed"] for level in per_level]
+        ),
+        "seeds": [level["seed"] for level in per_level],
+        "levels": per_level,
+    }
+
+
+def grouped_level_stats(levels, key):
+    groups = {}
+    for level in levels:
+        group_key = level[key]
+        if group_key is None:
+            group_key = "unknown"
+
+        groups.setdefault(str(group_key), []).append(level)
+
+    return {
+        group_key: summarize_levels(group_levels)
+        for group_key, group_levels in groups.items()
+    }
+
+
+def level_percent_by_age_chart(levels):
+    groups = {}
+    for level in levels:
+        groups.setdefault(level.get("age"), []).append(level)
+
+    rows = []
+    for age, age_levels in groups.items():
+        rows.append(
+            {
+                "age": age,
+                "level_count": len(age_levels),
+                "average_movement_percent": average(
+                    [level["movement_percent"] for level in age_levels]
+                ),
+            }
+        )
+
+    return sorted(
+        rows,
+        key=lambda row: (
+            row["age"] is None,
+            row["age"] if row["age"] is not None else 0,
+        ),
+    )
+
+
+def score_by_age_chart(levels):
+    groups = {}
+    for level in levels:
+        if level["is_interrupted"] or level["score"] is None:
+            continue
+
+        groups.setdefault(level.get("age"), []).append(level)
+
+    rows = []
+    for age, age_levels in groups.items():
+        rows.append(
+            {
+                "age": age,
+                "level_count": len(age_levels),
+                "average_score": average([level["score"] for level in age_levels]),
+            }
+        )
+
+    return sorted(
+        rows,
+        key=lambda row: (
+            row["age"] is None,
+            row["age"] if row["age"] is not None else 0,
+        ),
+    )
+
+
+def stars_by_speed_chart(levels):
+    return [
+        {
+            "speed": level["speed"],
+            "movement_percent": level["movement_percent"],
+            "stars": level["score"],
+            "age": level.get("age"),
+            "report": level.get("report"),
+            "user": level.get("user"),
+            "level": level["level"],
+            "seed": level["seed"],
+        }
+        for level in levels
+        if not level["is_interrupted"] and level["score"] is not None
+    ]
+
+
+def full_reports_charts(levels):
+    return {
+        "level_percent_by_age": level_percent_by_age_chart(levels),
+        "score_by_age": score_by_age_chart(levels),
+        "stars_by_speed": stars_by_speed_chart(levels),
+    }
+
+
+def summarize_levels(levels):
+    completed_levels = [
+        level for level in levels
+        if not level["is_interrupted"]
+    ]
+
+    return {
+        "level_count": len(levels),
+        "completed_level_count": len(completed_levels),
+        "interrupted_level_count": len(levels) - len(completed_levels),
+        "total_time_spent": sum(level["time_spent"] for level in levels),
+        "total_playable_time": sum(level["playable_time"] for level in levels),
+        "total_traveled_distance": sum(
+            level["traveled_distance"]
+            for level in levels
+        ),
+        "average_time_spent": average(
+            [level["time_spent"] for level in levels]
+        ),
+        "average_playable_time": average(
+            [level["playable_time"] for level in levels]
+        ),
+        "average_traveled_distance": average(
+            [level["traveled_distance"] for level in levels]
+        ),
+        "average_final_distance": average(
+            [
+                level["final_distance"]
+                for level in completed_levels
+                if level["final_distance"] is not None
+            ]
+        ),
+        "average_score": average(
+            [
+                level["score"]
+                for level in completed_levels
+                if level["score"] is not None
+            ]
+        ),
+        "average_movement_percent": average(
+            [level["movement_percent"] for level in levels]
+        ),
+        "average_speed": average(
+            [level["speed"] for level in levels]
+        ),
+    }
+
+
+def full_reports_global_stats(report_stats):
+    levels = []
+    for report in report_stats:
+        levels.extend(report["stats"]["levels"])
+
+    summary = summarize_levels(levels)
+    summary["by_seed"] = grouped_level_stats(levels, "seed")
+    summary["charts"] = full_reports_charts(levels)
+    return summary
+
+
 def _plot_level(ax, level, level_index, plt, np):
     basket = level["basket"]
     apple_tree = level["apple_tree"]

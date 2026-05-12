@@ -33,7 +33,6 @@ class SeedLevel(models.Model):
         return self.name or str(self.file)
 
 
-
 class FullReport(models.Model):
     session_id = models.CharField(max_length=255)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="full_reports")

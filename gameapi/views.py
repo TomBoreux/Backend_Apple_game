@@ -9,7 +9,9 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from datetime import timedelta
+from html import escape
 from hashlib import sha256
+import math
 import secrets
 from .models import (
     User,
@@ -21,11 +23,17 @@ from .models import GameApiTokenSession
 from .report_charts import (
     ReportChartDependencyError,
     ReportChartError,
+    full_report_stats,
+    full_reports_charts,
+    full_reports_global_stats,
     generate_full_report_chart,
+    parse_full_report,
 )
 
 ACCESS_TOKEN_SALT = "gameapi.access_token"
 REPORT_LEVEL_COUNT_WIDTH = 2
+MIN_STUDY_LEVEL_COUNT = 3
+STUDY_CLIENT_PLATFORM = "android"
 
 
 def doctor_data(obj):
@@ -77,6 +85,613 @@ def full_report_data(obj):
     }
 
 
+def user_age_at_report(report):
+    if report.user.birth_year is None:
+        return None
+
+    return report.date.year - report.user.birth_year
+
+
+def add_report_context_to_stats(stats, report):
+    age = user_age_at_report(report)
+
+    for level in stats["levels"]:
+        level["report"] = report.id
+        level["user"] = report.user_id
+        level["age"] = age
+
+    stats["charts"] = full_reports_charts(stats["levels"])
+    return stats
+
+
+def normalized_client_platform(value):
+    return (value or "").strip().lower()
+
+
+def is_study_client_platform(value):
+    return normalized_client_platform(value) == STUDY_CLIENT_PLATFORM
+
+
+def non_study_platform_reason(value):
+    platform = (value or "").strip() or "inconnue"
+    return (
+        f"Rapport ignoré : plateforme {platform}, "
+        f"plateforme requise {STUDY_CLIENT_PLATFORM}."
+    )
+
+
+def short_report_reason(level_count):
+    return (
+        f"Rapport ignoré : {level_count} niveau(x), "
+        f"minimum requis {MIN_STUDY_LEVEL_COUNT}."
+    )
+
+
+def request_wants_html(request):
+    if request.GET.get("format") == "json":
+        return False
+
+    accept = request.headers.get("Accept", "")
+    return "text/html" in accept and "application/json" not in accept
+
+
+def format_number(value, decimals=1):
+    if value is None:
+        return "-"
+
+    rounded = round(value, decimals)
+    if rounded == int(rounded):
+        return str(int(rounded))
+
+    return str(rounded)
+
+
+def chart_scale(values, padding=0.0):
+    values = [value for value in values if value is not None]
+    if not values:
+        return 0, 1
+
+    minimum = min(values)
+    maximum = max(values)
+    if minimum == maximum:
+        return minimum - 1, maximum + 1
+
+    span = maximum - minimum
+    return minimum - span * padding, maximum + span * padding
+
+
+def svg_empty_chart(message):
+    return (
+        '<svg class="chart" viewBox="0 0 760 300" role="img">'
+        '<text x="380" y="150" text-anchor="middle" class="empty">'
+        f"{escape(message)}</text></svg>"
+    )
+
+
+def svg_level_percent_by_age(rows):
+    rows = [row for row in rows if row["age"] is not None]
+    if not rows:
+        return svg_empty_chart("Aucune donnée d'âge disponible.")
+
+    width = 760
+    height = 320
+    left = 58
+    right = 24
+    top = 30
+    bottom = 54
+    chart_width = width - left - right
+    chart_height = height - top - bottom
+    max_value = max(row["average_movement_percent"] or 0 for row in rows)
+    max_value = max(100, math.ceil(max_value / 10) * 10)
+    bar_gap = 10
+    bar_width = max(16, (chart_width - bar_gap * (len(rows) - 1)) / len(rows))
+
+    parts = [
+        f'<svg class="chart" viewBox="0 0 {width} {height}" role="img">',
+        f'<line x1="{left}" y1="{top}" x2="{left}" y2="{height - bottom}" />',
+        f'<line x1="{left}" y1="{height - bottom}" x2="{width - right}" y2="{height - bottom}" />',
+    ]
+
+    for tick in range(0, int(max_value) + 1, max(10, int(max_value / 5))):
+        y = height - bottom - (tick / max_value) * chart_height
+        parts.append(f'<line class="grid" x1="{left}" y1="{y}" x2="{width - right}" y2="{y}" />')
+        parts.append(f'<text x="{left - 10}" y="{y + 4}" text-anchor="end">{tick}%</text>')
+
+    for index, row in enumerate(rows):
+        value = row["average_movement_percent"] or 0
+        x = left + index * (bar_width + bar_gap)
+        bar_height = (value / max_value) * chart_height
+        y = height - bottom - bar_height
+        label = format_number(value)
+        parts.append(f'<rect class="bar" x="{x}" y="{y}" width="{bar_width}" height="{bar_height}" rx="3" />')
+        parts.append(f'<text x="{x + bar_width / 2}" y="{y - 8}" text-anchor="middle">{label}%</text>')
+        parts.append(f'<text x="{x + bar_width / 2}" y="{height - bottom + 24}" text-anchor="middle">{row["age"]}</text>')
+
+    parts.append(f'<text x="{width / 2}" y="{height - 8}" text-anchor="middle">Âge</text>')
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def svg_score_by_age(rows):
+    return svg_bar_chart(
+        [
+            {
+                "label": row["age"] if row["age"] is not None else "Âge inconnu",
+                "value": row["average_score"],
+                "title": (
+                    f"Âge {row['age']} : score moyen "
+                    f"{format_number(row['average_score'], 2)} "
+                    f"sur {row['level_count']} niveaux"
+                ),
+            }
+            for row in rows
+            if row["age"] is not None
+        ],
+        "Aucune donnée de score par âge disponible.",
+        max_floor=3,
+    )
+
+
+def svg_stars_by_speed(points):
+    if not points:
+        return svg_empty_chart("Aucun niveau terminé avec étoiles disponible.")
+
+    width = 760
+    height = 320
+    left = 58
+    right = 24
+    top = 24
+    bottom = 54
+    chart_width = width - left - right
+    chart_height = height - top - bottom
+    min_speed, max_speed = chart_scale([point["speed"] for point in points], padding=0.08)
+    min_stars, max_stars = 0, max(3, max(point["stars"] for point in points))
+
+    def x_pos(speed):
+        return left + ((speed - min_speed) / (max_speed - min_speed)) * chart_width
+
+    def y_pos(stars):
+        return height - bottom - ((stars - min_stars) / (max_stars - min_stars)) * chart_height
+
+    parts = [
+        f'<svg class="chart" viewBox="0 0 {width} {height}" role="img">',
+        f'<line x1="{left}" y1="{top}" x2="{left}" y2="{height - bottom}" />',
+        f'<line x1="{left}" y1="{height - bottom}" x2="{width - right}" y2="{height - bottom}" />',
+    ]
+
+    for stars in range(min_stars, max_stars + 1):
+        y = y_pos(stars)
+        parts.append(f'<line class="grid" x1="{left}" y1="{y}" x2="{width - right}" y2="{y}" />')
+        parts.append(f'<text x="{left - 10}" y="{y + 4}" text-anchor="end">{stars}</text>')
+
+    for index in range(6):
+        speed = min_speed + ((max_speed - min_speed) / 5) * index
+        x = x_pos(speed)
+        parts.append(f'<text x="{x}" y="{height - bottom + 24}" text-anchor="middle">{format_number(speed, 2)}</text>')
+
+    for point in points:
+        title = (
+            f"Rapport {point['report']}, niveau {point['level']}, "
+            f"vitesse {format_number(point['speed'], 2)}, étoiles {point['stars']}"
+        )
+        parts.append(
+            f'<circle class="dot" cx="{x_pos(point["speed"])}" cy="{y_pos(point["stars"])}" r="5">'
+            f"<title>{escape(title)}</title></circle>"
+        )
+
+    parts.append(f'<text x="{width / 2}" y="{height - 8}" text-anchor="middle">Vitesse</text>')
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def svg_bar_chart(rows, empty_message, value_suffix="", max_floor=None):
+    rows = [
+        {
+            "label": str(row["label"]),
+            "value": row["value"] or 0,
+            "title": row.get("title", ""),
+        }
+        for row in rows
+    ]
+    if not rows:
+        return svg_empty_chart(empty_message)
+
+    width = 760
+    height = 320
+    left = 58
+    right = 24
+    top = 30
+    bottom = 58
+    chart_width = width - left - right
+    chart_height = height - top - bottom
+    max_value = max(row["value"] for row in rows)
+    if max_floor is not None:
+        max_value = max(max_floor, max_value)
+    max_value = max(1, math.ceil(max_value / 10) * 10 if max_value > 10 else math.ceil(max_value))
+    bar_gap = 10
+    bar_width = max(16, (chart_width - bar_gap * (len(rows) - 1)) / len(rows))
+
+    parts = [
+        f'<svg class="chart" viewBox="0 0 {width} {height}" role="img">',
+        f'<line x1="{left}" y1="{top}" x2="{left}" y2="{height - bottom}" />',
+        f'<line x1="{left}" y1="{height - bottom}" x2="{width - right}" y2="{height - bottom}" />',
+    ]
+
+    tick_step = max(1, int(max_value / 5))
+    for tick in range(0, int(max_value) + 1, tick_step):
+        y = height - bottom - (tick / max_value) * chart_height
+        parts.append(f'<line class="grid" x1="{left}" y1="{y}" x2="{width - right}" y2="{y}" />')
+        parts.append(f'<text x="{left - 10}" y="{y + 4}" text-anchor="end">{tick}{escape(value_suffix)}</text>')
+
+    for index, row in enumerate(rows):
+        value = row["value"]
+        x = left + index * (bar_width + bar_gap)
+        bar_height = (value / max_value) * chart_height
+        y = height - bottom - bar_height
+        label = escape(format_number(value))
+        title = escape(row["title"] or f"{row['label']}: {label}{value_suffix}")
+        parts.append(f'<rect class="bar" x="{x}" y="{y}" width="{bar_width}" height="{bar_height}" rx="3"><title>{title}</title></rect>')
+        if len(rows) <= 18:
+            parts.append(f'<text x="{x + bar_width / 2}" y="{y - 8}" text-anchor="middle">{label}{escape(value_suffix)}</text>')
+        label_step = max(1, math.ceil(len(rows) / 12))
+        if len(rows) <= 18 or index % label_step == 0:
+            parts.append(f'<text x="{x + bar_width / 2}" y="{height - bottom + 24}" text-anchor="middle">{escape(row["label"][:10])}</text>')
+
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def svg_line_chart(rows, empty_message, value_suffix="", max_floor=None):
+    rows = [
+        {
+            "label": str(row["label"]),
+            "value": row["value"] or 0,
+            "title": row.get("title", ""),
+        }
+        for row in rows
+    ]
+    if not rows:
+        return svg_empty_chart(empty_message)
+
+    width = 760
+    height = 320
+    left = 58
+    right = 24
+    top = 30
+    bottom = 58
+    chart_width = width - left - right
+    chart_height = height - top - bottom
+    max_value = max(row["value"] for row in rows)
+    if max_floor is not None:
+        max_value = max(max_floor, max_value)
+    max_value = max(1, math.ceil(max_value / 10) * 10 if max_value > 10 else math.ceil(max_value))
+
+    def x_pos(index):
+        if len(rows) == 1:
+            return left + chart_width / 2
+        return left + (index / (len(rows) - 1)) * chart_width
+
+    def y_pos(value):
+        return height - bottom - (value / max_value) * chart_height
+
+    points = " ".join(
+        f'{x_pos(index)},{y_pos(row["value"])}'
+        for index, row in enumerate(rows)
+    )
+    parts = [
+        f'<svg class="chart" viewBox="0 0 {width} {height}" role="img">',
+        f'<line x1="{left}" y1="{top}" x2="{left}" y2="{height - bottom}" />',
+        f'<line x1="{left}" y1="{height - bottom}" x2="{width - right}" y2="{height - bottom}" />',
+    ]
+
+    tick_step = max(1, int(max_value / 5))
+    for tick in range(0, int(max_value) + 1, tick_step):
+        y = height - bottom - (tick / max_value) * chart_height
+        parts.append(f'<line class="grid" x1="{left}" y1="{y}" x2="{width - right}" y2="{y}" />')
+        parts.append(f'<text x="{left - 10}" y="{y + 4}" text-anchor="end">{tick}{escape(value_suffix)}</text>')
+
+    parts.append(f'<polyline class="line" points="{points}" />')
+
+    for index, row in enumerate(rows):
+        x = x_pos(index)
+        y = y_pos(row["value"])
+        label = escape(format_number(row["value"]))
+        title = escape(row["title"] or f"{row['label']}: {label}{value_suffix}")
+        parts.append(f'<circle class="line-dot" cx="{x}" cy="{y}" r="4"><title>{title}</title></circle>')
+        if len(rows) <= 16:
+            parts.append(f'<text x="{x}" y="{height - bottom + 24}" text-anchor="middle">{escape(row["label"][:10])}</text>')
+
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def level_chart_rows(levels, field):
+    return [
+        {
+            "label": f"N{level['level']}",
+            "value": level[field],
+            "title": f"Niveau {level['level']}: {format_number(level[field], 2)}",
+        }
+        for level in levels
+    ]
+
+
+def completed_level_chart_rows(levels, field):
+    return level_chart_rows(
+        [level for level in levels if not level["is_interrupted"] and level[field] is not None],
+        field,
+    )
+
+
+def completion_rate(stats):
+    if not stats["level_count"]:
+        return None
+    return stats["completed_level_count"] / stats["level_count"] * 100
+
+
+def stats_metric_items(stats, extra_items=None):
+    metrics = extra_items or []
+    metrics.extend(
+        [
+            ("Niveaux", stats["level_count"]),
+            ("Mouvement moyen", f"{format_number(stats['average_movement_percent'])}%"),
+            ("Vitesse moyenne", format_number(stats.get("average_speed"), 2)),
+        ]
+    )
+    return metrics
+
+
+def metrics_html(metrics):
+    return "".join(
+        '<article class="metric">'
+        f'<span>{escape(str(label))}</span>'
+        f'<strong>{escape(str(value))}</strong>'
+        '</article>'
+        for label, value in metrics
+    )
+
+
+def panel_html(title, body, description=""):
+    description_html = (
+        f'<p class="panel-description">{escape(description)}</p>'
+        if description
+        else ""
+    )
+    return (
+        '<article class="panel">'
+        f'<h2>{escape(title)}</h2>'
+        f"{description_html}"
+        f"{body}"
+        '</article>'
+    )
+
+
+def stats_dashboard_html(title, subtitle, metrics, panels, json_href="?format=json"):
+    return f"""<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escape(title)}</title>
+  <style>
+    body {{ margin: 0; font-family: system-ui, sans-serif; color: #172033; background: #f7f8fb; }}
+    main {{ max-width: 1180px; margin: 0 auto; padding: 32px 20px 48px; }}
+    h1 {{ margin: 0 0 8px; font-size: 28px; }}
+    h2 {{ margin: 0 0 14px; font-size: 18px; }}
+    .meta {{ margin: 0 0 24px; color: #5f6878; }}
+    .metrics {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 12px; margin-bottom: 18px; }}
+    .metric {{ background: white; border: 1px solid #e4e8f0; border-radius: 8px; padding: 14px; }}
+    .metric span {{ display: block; color: #667085; font-size: 13px; margin-bottom: 6px; }}
+    .metric strong {{ display: block; font-size: 23px; line-height: 1.1; }}
+    .charts {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 18px; }}
+    .panel {{ background: white; border: 1px solid #e4e8f0; border-radius: 8px; padding: 18px; box-shadow: 0 8px 24px rgba(30, 42, 70, 0.06); }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+    th, td {{ text-align: left; border-bottom: 1px solid #e4e8f0; padding: 8px 6px; vertical-align: top; }}
+    th {{ color: #667085; font-weight: 600; }}
+    .empty-text {{ margin: 0; color: #667085; }}
+    .panel-description {{ margin: -6px 0 14px; color: #667085; font-size: 13px; line-height: 1.4; }}
+    .id-list {{ display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }}
+    .id-list li {{ border: 1px solid #d8dee9; border-radius: 999px; padding: 5px 9px; background: #f8fafc; font-size: 13px; }}
+    .chart {{ width: 100%; height: auto; overflow: visible; }}
+    svg line {{ stroke: #9aa4b2; stroke-width: 1; }}
+    svg line.grid {{ stroke: #e5e9f0; }}
+    svg text {{ fill: #4e5868; font-size: 12px; }}
+    svg .bar {{ fill: #2f6f9f; }}
+    svg .dot {{ fill: #d14f45; opacity: 0.82; }}
+    svg .line {{ fill: none; stroke: #2f6f9f; stroke-width: 3; }}
+    svg .line-dot {{ fill: #2f6f9f; stroke: white; stroke-width: 1.5; }}
+    svg .empty {{ font-size: 15px; fill: #6b7280; }}
+    a {{ color: #2f6f9f; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>{escape(title)}</h1>
+    <p class="meta">{escape(subtitle)} <a href="{escape(json_href)}">Voir les données JSON</a></p>
+    <section class="metrics">{metrics_html(metrics)}</section>
+    <section class="charts">{"".join(panels)}</section>
+  </main>
+</body>
+</html>"""
+
+
+def full_report_stats_html(payload):
+    stats = payload["stats"]
+    levels = stats["levels"]
+    subtitle = (
+        f"Rapport {payload['id']} - utilisateur {payload['user']} - "
+        f"session {payload['session_id']}"
+    )
+    metrics = stats_metric_items(
+        stats,
+        [
+            ("Rapport", payload["id"]),
+            ("Utilisateur", payload["user"]),
+            ("Âge", levels[0].get("age") if levels else "-"),
+        ],
+    )
+    panels = [
+        panel_html(
+            "Pourcentage de mouvement par niveau",
+            svg_line_chart(
+                level_chart_rows(levels, "movement_percent"),
+                "Aucun niveau disponible.",
+                "%",
+                max_floor=100,
+            ),
+            "Montre, pour chaque niveau du rapport, la distance parcourue par rapport à la distance attendue pendant le temps jouable.",
+        ),
+        panel_html(
+            "Nombre d'étoiles par niveau",
+            svg_bar_chart(
+                completed_level_chart_rows(levels, "score"),
+                "Aucun niveau terminé avec étoiles disponible.",
+                max_floor=3,
+            ),
+            "Compare le score obtenu à chaque niveau terminé du rapport.",
+        ),
+        panel_html(
+            "Vitesse par niveau",
+            svg_line_chart(
+                level_chart_rows(levels, "speed"),
+                "Aucune vitesse disponible.",
+            ),
+            "Affiche la vitesse moyenne du joueur à chaque niveau, calculée avec la distance parcourue divisée par le temps jouable.",
+        ),
+        panel_html(
+            "Étoiles en fonction de la vitesse",
+            svg_stars_by_speed(stats["charts"]["stars_by_speed"]),
+            "Chaque point correspond à un niveau terminé : l'axe horizontal représente la vitesse moyenne, l'axe vertical le nombre d'étoiles.",
+        ),
+        panel_html(
+            "Distance finale par niveau",
+            svg_bar_chart(
+                completed_level_chart_rows(levels, "final_distance"),
+                "Aucune distance finale disponible.",
+            ),
+            "Indique la distance restante à la cible à la fin de chaque niveau terminé.",
+        ),
+    ]
+    return stats_dashboard_html(
+        "Stats du rapport",
+        subtitle,
+        metrics,
+        panels,
+    )
+
+
+def excluded_full_report_stats_html(payload):
+    reason = payload["reason"]
+    metrics = [
+        ("Rapport", payload["id"]),
+        ("Utilisateur", payload["user"]),
+        ("Plateforme", payload.get("client_platform") or "-"),
+        ("Niveaux", payload.get("level_count", "-")),
+        ("Statut", "Exclu"),
+    ]
+    panels = [
+        panel_html(
+            "Rapport exclu de l'étude",
+            f'<p class="empty-text">{escape(reason)}</p>',
+        )
+    ]
+    return stats_dashboard_html(
+        "Stats du rapport",
+        f"Rapport {payload['id']} - session {payload['session_id']}",
+        metrics,
+        panels,
+    )
+
+
+def issue_table_html(title, rows, empty_message):
+    if not rows:
+        return panel_html(title, f'<p class="empty-text">{escape(empty_message)}</p>')
+
+    body = [
+        '<table>',
+        '<thead><tr><th>ID</th><th>Utilisateur</th><th>Session</th><th>Raison</th></tr></thead>',
+        '<tbody>',
+    ]
+    for row in rows:
+        reason = row.get("reason") or row.get("error") or "-"
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(row.get('id', '-')))}</td>"
+            f"<td>{escape(str(row.get('user', '-')))}</td>"
+            f"<td>{escape(str(row.get('session_id', '-')))}</td>"
+            f"<td>{escape(str(reason))}</td>"
+            "</tr>"
+        )
+
+    body.extend(["</tbody>", "</table>"])
+    return panel_html(title, "".join(body))
+
+
+def excluded_report_ids_html(rows):
+    if not rows:
+        return panel_html(
+            "Rapports exclus de l'étude",
+            '<p class="empty-text">Aucun rapport exclu par les critères de l\'étude.</p>',
+        )
+
+    ids = sorted(row.get("id") for row in rows if row.get("id") is not None)
+    items = "".join(f"<li>{escape(str(report_id))}</li>" for report_id in ids)
+    return panel_html(
+        "Rapports exclus de l'étude",
+        f'<ul class="id-list">{items}</ul>',
+        "Seuls les identifiants sont affichés ici ; les détails restent disponibles dans le JSON.",
+    )
+
+
+def full_reports_stats_html(payload):
+    stats = payload["stats"]
+    charts = stats["charts"]
+    subtitle = (
+        f"{payload['parsed_report_count']} rapports analysés, "
+        f"{payload['excluded_report_count']} exclus, "
+        f"{payload['failed_report_count']} erreurs."
+    )
+    metrics = stats_metric_items(
+        stats,
+        [
+            ("Rapports", payload["report_count"]),
+            ("Rapports Android", payload["android_report_count"]),
+            ("Rapports analysés", payload["parsed_report_count"]),
+            ("Rapports exclus", payload["excluded_report_count"]),
+            ("Rapports en erreur", payload["failed_report_count"]),
+        ],
+    )
+    panels = [
+        panel_html(
+            "Pourcentage moyen des niveaux en fonction de l'âge",
+            svg_level_percent_by_age(charts["level_percent_by_age"]),
+            "Regroupe les niveaux des rapports analysés par âge et affiche le pourcentage moyen de mouvement pour chaque âge.",
+        ),
+        panel_html(
+            "Score moyen en fonction de l'âge",
+            svg_score_by_age(charts["score_by_age"]),
+            "Regroupe les niveaux terminés des rapports analysés par âge et affiche le score moyen obtenu.",
+        ),
+        panel_html(
+            "Nombre d'étoiles en fonction de la vitesse",
+            svg_stars_by_speed(charts["stars_by_speed"]),
+            "Chaque point correspond à un niveau terminé issu des rapports analysés : vitesse moyenne en abscisse, étoiles en ordonnée.",
+        ),
+        excluded_report_ids_html(payload["excluded_reports"]),
+        issue_table_html(
+            "Fichiers en erreur",
+            payload["failed_reports"],
+            "Aucun fichier en erreur.",
+        ),
+    ]
+    return stats_dashboard_html(
+        "Stats générales des rapports",
+        subtitle,
+        metrics,
+        panels,
+    )
+
+
 def request_seed_levels(request):
     for field in ("seed_levels", "seeds", "seed"):
         seed_level_ids = request_data_values(request, field)
@@ -119,40 +734,49 @@ def request_data_values(request, field):
     return parsed_values
 
 
-def dat_report_blocks(text_content):
+def dat_report_payload(text_content, require_count_match):
     lines = [line.strip() for line in text_content.splitlines() if line.strip()]
     if not lines:
-        return [], "invalid"
+        return 0, [], "invalid"
 
     try:
         level_count = int(lines[0])
     except ValueError:
-        return [], "invalid"
+        return 0, [], "invalid"
 
     if level_count < 1:
-        return [], "invalid"
+        return 0, [], "invalid"
 
     try:
         index = 1
         blocks = []
-        for level_number in range(level_count):
+        while index < len(lines):
             block, index = read_dat_level_block(
                 lines,
                 index,
-                level_number,
-                level_count,
             )
             blocks.append(block)
     except ValueError:
-        return [], "invalid"
+        return 0, [], "invalid"
 
-    if index != len(lines):
-        return [], "invalid"
+    if require_count_match and len(blocks) != level_count:
+        return 0, [], "invalid"
 
-    return blocks, None
+    if len(blocks) > level_count:
+        return 0, [], "invalid"
+
+    return level_count, blocks, None
 
 
-def read_dat_level_block(lines, index, level_number, level_count):
+def dat_report_blocks(text_content):
+    _level_count, blocks, error = dat_report_payload(
+        text_content,
+        require_count_match=True,
+    )
+    return blocks, error
+
+
+def read_dat_level_block(lines, index):
     start = index
 
     index = consume_dat_line(lines, index, int)
@@ -169,12 +793,11 @@ def read_dat_level_block(lines, index, level_number, level_count):
     for _position_index in range(position_count):
         index = consume_dat_pair(lines, index, float)
 
-    is_last_level = level_number == level_count - 1
     remaining_lines = len(lines) - index
     if remaining_lines >= 2:
         index = consume_dat_line(lines, index, float)
         index = consume_dat_line(lines, index, int)
-    elif remaining_lines == 0 and is_last_level:
+    elif remaining_lines == 0:
         pass
     else:
         raise ValueError
@@ -235,9 +858,13 @@ def uploaded_dat_blocks(uploaded_file):
         if hasattr(uploaded_file, "seek"):
             uploaded_file.seek(0)
         text_content = raw_content.decode("utf-8")
-        return dat_report_blocks(text_content)
+        level_count, blocks, error = dat_report_payload(
+            text_content,
+            require_count_match=False,
+        )
+        return level_count, blocks, error
     except (AttributeError, UnicodeDecodeError, ValueError):
-        return [], "invalid"
+        return 0, [], "invalid"
 
 
 def existing_dat_blocks(obj):
@@ -252,17 +879,24 @@ def existing_dat_blocks(obj):
         return [], "invalid"
 
 
-def append_report_dat(obj, current_count, uploaded_blocks):
-    if not uploaded_blocks:
+def append_report_dat(obj, current_blocks, uploaded_level_count, uploaded_blocks):
+    new_blocks = new_report_blocks(current_blocks, uploaded_blocks)
+    if not new_blocks:
         return
+
+    expected_level_count = len(current_blocks) + len(new_blocks)
+    if uploaded_level_count != expected_level_count:
+        raise ValueError(
+            "The uploaded report level-count header does not match the "
+            "merged report level count."
+        )
 
     filename = report_dat_filename(obj)
     if not obj.file:
-        create_report_dat(obj, filename, uploaded_blocks)
+        create_report_dat(obj, filename, uploaded_level_count, new_blocks)
         return
 
-    new_count = current_count + len(uploaded_blocks)
-    appended_content = dat_blocks_content(uploaded_blocks, include_count=False)
+    appended_content = dat_blocks_content(new_blocks, include_count=False)
 
     with obj.file.open("r+b") as file_handle:
         header = file_handle.readline()
@@ -270,7 +904,7 @@ def append_report_dat(obj, current_count, uploaded_blocks):
             raise ValueError("The existing report file has no level count.")
 
         header_text = header.decode("utf-8").rstrip("\r\n")
-        new_header_text = format_level_count(new_count, len(header_text))
+        new_header_text = format_level_count(uploaded_level_count, len(header_text))
         if len(new_header_text) > len(header_text):
             raise ValueError(
                 "The existing report file level-count header is too short "
@@ -290,15 +924,36 @@ def append_report_dat(obj, current_count, uploaded_blocks):
         file_handle.write(appended_content)
 
 
-def create_report_dat(obj, filename, blocks):
-    content = dat_blocks_content(blocks, include_count=True)
+def new_report_blocks(current_blocks, uploaded_blocks):
+    seen_blocks = {dat_block_key(block) for block in current_blocks}
+    new_blocks = []
+
+    for block in uploaded_blocks:
+        block_key = dat_block_key(block)
+        if block_key in seen_blocks:
+            continue
+
+        seen_blocks.add(block_key)
+        new_blocks.append(block)
+
+    return new_blocks
+
+
+def dat_block_key(block):
+    return tuple(block)
+
+
+def create_report_dat(obj, filename, level_count, blocks):
+    content = dat_blocks_content(blocks, include_count=True, level_count=level_count)
     obj.file.save(filename, ContentFile(content), save=False)
 
 
-def dat_blocks_content(blocks, include_count):
+def dat_blocks_content(blocks, include_count, level_count=None):
     lines = []
     if include_count:
-        lines.append(format_level_count(len(blocks), REPORT_LEVEL_COUNT_WIDTH))
+        if level_count is None:
+            level_count = len(blocks)
+        lines.append(format_level_count(level_count, REPORT_LEVEL_COUNT_WIDTH))
 
     for block in blocks:
         lines.extend(block)
@@ -879,7 +1534,9 @@ def full_report_api(request, id=None):
             )
 
         uploaded_file = request.data.get("file")
-        uploaded_blocks, upload_error = uploaded_dat_blocks(uploaded_file)
+        uploaded_level_count, uploaded_blocks, upload_error = uploaded_dat_blocks(
+            uploaded_file,
+        )
         if upload_error == "invalid":
             return Response(
                 {"file": ["The uploaded file must be a valid line-by-line .dat report."]},
@@ -930,7 +1587,12 @@ def full_report_api(request, id=None):
                 obj.save()
 
             try:
-                append_report_dat(obj, len(current_blocks), uploaded_blocks)
+                append_report_dat(
+                    obj,
+                    current_blocks,
+                    uploaded_level_count,
+                    uploaded_blocks,
+                )
             except ValueError as exc:
                 return Response({"file": [str(exc)]}, status=400)
 
@@ -958,6 +1620,119 @@ def full_report_chart_api(request, id):
         return admin_response
 
     try:
+        obj = FullReport.objects.select_related("user").get(id=id)
+    except FullReport.DoesNotExist:
+        return Response(
+            {"error": "No full report was found for this id."},
+            status=404,
+        )
+
+    return report_chart_response(obj, "full report")
+
+
+@api_view(["GET"])
+def full_reports_stats_api(request):
+    admin_response = require_admin_access(request)
+    if admin_response:
+        return admin_response
+
+    reports = (
+        FullReport.objects
+        .filter(file__gt="")
+        .select_related("user")
+        .prefetch_related("seed_levels")
+    )
+    parsed_reports = []
+    failed_reports = []
+    excluded_reports = []
+
+    for report in reports:
+        if not is_study_client_platform(report.client_platform):
+            excluded_reports.append(
+                {
+                    "id": report.id,
+                    "user": report.user_id,
+                    "session_id": report.session_id,
+                    "client_platform": report.client_platform,
+                    "reason": non_study_platform_reason(report.client_platform),
+                }
+            )
+            continue
+
+        try:
+            with report.file.open("r") as file_handle:
+                levels = parse_full_report(file_handle)
+        except (FileNotFoundError, UnicodeDecodeError, ReportChartError) as exc:
+            failed_reports.append(
+                {
+                    "id": report.id,
+                    "user": report.user_id,
+                    "session_id": report.session_id,
+                    "error": str(exc),
+                }
+            )
+            continue
+
+        if len(levels) < MIN_STUDY_LEVEL_COUNT:
+            excluded_reports.append(
+                {
+                    "id": report.id,
+                    "user": report.user_id,
+                    "session_id": report.session_id,
+                    "client_platform": report.client_platform,
+                    "level_count": len(levels),
+                    "reason": short_report_reason(len(levels)),
+                }
+            )
+            continue
+
+        stats = add_report_context_to_stats(full_report_stats(levels), report)
+        parsed_reports.append(
+            {
+                "id": report.id,
+                "user": report.user_id,
+                "session_id": report.session_id,
+                "date": report.date,
+                "app_version": report.app_version,
+                "app_version_code": report.app_version_code,
+                "level_generation_version": report.level_generation_version,
+                "client_platform": report.client_platform,
+                "seed_levels": [seed.id for seed in report.seed_levels.all()],
+                "stats": stats,
+            }
+        )
+
+    payload = {
+        "report_count": FullReport.objects.count(),
+        "report_with_file_count": reports.count(),
+        "android_report_count": sum(
+            1
+            for report in reports
+            if is_study_client_platform(report.client_platform)
+        ),
+        "study_client_platform": STUDY_CLIENT_PLATFORM,
+        "parsed_report_count": len(parsed_reports),
+        "excluded_report_count": len(excluded_reports),
+        "excluded_reports": excluded_reports,
+        "failed_report_count": len(failed_reports),
+        "failed_reports": failed_reports,
+        "stats": full_reports_global_stats(parsed_reports),
+        "reports": parsed_reports,
+    }
+
+    if request_wants_html(request):
+        return HttpResponse(full_reports_stats_html(payload))
+
+    return Response(payload)
+
+
+@api_view(["GET"])
+def full_report_stats_api(request, id):
+    admin_response = require_admin_access(request)
+    if admin_response:
+        return admin_response
+
+    try:
         obj = FullReport.objects.get(id=id)
     except FullReport.DoesNotExist:
         return Response(
@@ -965,13 +1740,94 @@ def full_report_chart_api(request, id):
             status=404,
         )
 
-    return full_report_chart_response(obj)
-
-
-def full_report_chart_response(obj):
     if not obj.file:
         return Response(
             {"error": "This full report has no file attached."},
+            status=404,
+        )
+
+    if not is_study_client_platform(obj.client_platform):
+        payload = {
+            "id": obj.id,
+            "user": obj.user_id,
+            "session_id": obj.session_id,
+            "date": obj.date,
+            "app_version": obj.app_version,
+            "app_version_code": obj.app_version_code,
+            "level_generation_version": obj.level_generation_version,
+            "client_platform": obj.client_platform,
+            "seed_levels": [seed.id for seed in obj.seed_levels.all()],
+            "excluded": True,
+            "minimum_level_count": MIN_STUDY_LEVEL_COUNT,
+            "study_client_platform": STUDY_CLIENT_PLATFORM,
+            "reason": non_study_platform_reason(obj.client_platform),
+        }
+
+        if request_wants_html(request):
+            return HttpResponse(excluded_full_report_stats_html(payload))
+
+        return Response(payload)
+
+    try:
+        with obj.file.open("r") as file_handle:
+            levels = parse_full_report(file_handle)
+    except FileNotFoundError:
+        return Response(
+            {"error": "The full report file could not be found."},
+            status=404,
+        )
+    except (UnicodeDecodeError, ReportChartError) as exc:
+        return Response(
+            {"error": f"The full report file could not be analyzed: {exc}"},
+            status=400,
+        )
+
+    if len(levels) < MIN_STUDY_LEVEL_COUNT:
+        payload = {
+            "id": obj.id,
+            "user": obj.user_id,
+            "session_id": obj.session_id,
+            "date": obj.date,
+            "app_version": obj.app_version,
+            "app_version_code": obj.app_version_code,
+            "level_generation_version": obj.level_generation_version,
+            "client_platform": obj.client_platform,
+            "seed_levels": [seed.id for seed in obj.seed_levels.all()],
+            "excluded": True,
+            "level_count": len(levels),
+            "minimum_level_count": MIN_STUDY_LEVEL_COUNT,
+            "study_client_platform": STUDY_CLIENT_PLATFORM,
+            "reason": short_report_reason(len(levels)),
+        }
+
+        if request_wants_html(request):
+            return HttpResponse(excluded_full_report_stats_html(payload))
+
+        return Response(payload)
+
+    payload = {
+        "id": obj.id,
+        "user": obj.user_id,
+        "session_id": obj.session_id,
+        "date": obj.date,
+        "app_version": obj.app_version,
+        "app_version_code": obj.app_version_code,
+        "level_generation_version": obj.level_generation_version,
+        "client_platform": obj.client_platform,
+        "seed_levels": [seed.id for seed in obj.seed_levels.all()],
+        "stats": add_report_context_to_stats(full_report_stats(levels), obj),
+    }
+
+    if request_wants_html(request):
+        return HttpResponse(full_report_stats_html(payload))
+
+    return Response(payload)
+
+
+def report_chart_response(obj, report_label):
+    if not obj.file:
+        return Response(
+            {"error": f"This {report_label} has no file attached."},
             status=404,
         )
 
@@ -980,7 +1836,7 @@ def full_report_chart_response(obj):
             chart = generate_full_report_chart(file_handle)
     except FileNotFoundError:
         return Response(
-            {"error": "The full report file could not be found."},
+            {"error": f"The {report_label} file could not be found."},
             status=404,
         )
     except (UnicodeDecodeError, ReportChartError) as exc:
@@ -991,7 +1847,7 @@ def full_report_chart_response(obj):
             )
 
         return Response(
-            {"error": f"The full report file could not be converted to a chart: {exc}"},
+            {"error": f"The {report_label} file could not be converted to a chart: {exc}"},
             status=400,
         )
 

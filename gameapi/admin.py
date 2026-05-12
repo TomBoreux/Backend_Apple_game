@@ -67,7 +67,7 @@ class ReportDownloadAdminMixin:
 
 @admin.register(FullReport)
 class FullReportAdmin(ReportDownloadAdminMixin, admin.ModelAdmin):
-    readonly_fields = ("download_file", "view_chart")
+    readonly_fields = ("download_file", "view_chart", "view_stats")
     list_display = (
         "id",
         "user",
@@ -81,6 +81,7 @@ class FullReportAdmin(ReportDownloadAdminMixin, admin.ModelAdmin):
         "date",
         "download_file",
         "view_chart",
+        "view_stats",
     )
     list_filter = (
         "app_version",
@@ -127,6 +128,16 @@ class FullReportAdmin(ReportDownloadAdminMixin, admin.ModelAdmin):
             obj.pk,
         )
 
+    @admin.display(description="Stats")
+    def view_stats(self, obj):
+        if not obj.pk:
+            return "-"
+
+        return format_html(
+            '<a href="/api/full-report/{}/stats/" target="_blank">View stats</a>',
+            obj.pk,
+        )
+
 
 class FullReportInline(admin.TabularInline):
     model = FullReport
@@ -141,6 +152,7 @@ class FullReportInline(admin.TabularInline):
         "date",
         "download_file",
         "view_chart",
+        "view_stats",
     )
     readonly_fields = fields
     extra = 0
@@ -178,6 +190,16 @@ class FullReportInline(admin.TabularInline):
 
         return format_html(
             '<a href="/api/full-report/{}/chart/" target="_blank">View chart</a>',
+            obj.pk,
+        )
+
+    @admin.display(description="Stats")
+    def view_stats(self, obj):
+        if not obj.pk:
+            return "-"
+
+        return format_html(
+            '<a href="/api/full-report/{}/stats/" target="_blank">View stats</a>',
             obj.pk,
         )
 

@@ -7,6 +7,8 @@ from .views import (
     seed_api,
     full_report_api,
     full_report_chart_api,
+    full_reports_stats_api,
+    full_report_stats_api,
 )
 
 urlpatterns = [
@@ -19,6 +21,8 @@ urlpatterns = [
     path("seed/", seed_api),
     path("seed/<int:id>/", seed_api),
     path("full-report/", full_report_api),
+    path("full-report/stats/", full_reports_stats_api),
     path("full-report/<int:id>/", full_report_api),
     path("full-report/<int:id>/chart/", full_report_chart_api),
+    path("full-report/<int:id>/stats/", full_report_stats_api),
 ]
