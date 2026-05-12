@@ -186,6 +186,13 @@ def level_stats(level, level_index):
         if expected_distance
         else 0
     )
+    movement_percent = movement_ratio * 100
+    score = level["score"]
+    movement_percent_per_star = (
+        movement_percent / score
+        if score and score > 0
+        else None
+    )
 
     return {
         "level": level_index + 1,
@@ -206,9 +213,10 @@ def level_stats(level, level_index):
         "expected_distance": expected_distance,
         "speed": speed,
         "movement_ratio": movement_ratio,
-        "movement_percent": movement_ratio * 100,
+        "movement_percent": movement_percent,
+        "movement_percent_per_star": movement_percent_per_star,
         "final_distance": level["final_distance"],
-        "score": level["score"],
+        "score": score,
         "is_interrupted": level["final_distance"] is None or level["score"] is None,
     }
 
@@ -262,6 +270,13 @@ def full_report_stats(levels):
         ),
         "average_movement_percent": average(
             [level["movement_percent"] for level in per_level]
+        ),
+        "average_movement_percent_per_star": average(
+            [
+                level["movement_percent_per_star"]
+                for level in completed_levels
+                if level["movement_percent_per_star"] is not None
+            ]
         ),
         "average_speed": average(
             [level["speed"] for level in per_level]
@@ -339,11 +354,41 @@ def score_by_age_chart(levels):
     )
 
 
+def movement_per_star_by_age_chart(levels):
+    groups = {}
+    for level in levels:
+        if level["is_interrupted"] or level["movement_percent_per_star"] is None:
+            continue
+
+        groups.setdefault(level.get("age"), []).append(level)
+
+    rows = []
+    for age, age_levels in groups.items():
+        rows.append(
+            {
+                "age": age,
+                "level_count": len(age_levels),
+                "average_movement_percent_per_star": average(
+                    [level["movement_percent_per_star"] for level in age_levels]
+                ),
+            }
+        )
+
+    return sorted(
+        rows,
+        key=lambda row: (
+            row["age"] is None,
+            row["age"] if row["age"] is not None else 0,
+        ),
+    )
+
+
 def stars_by_speed_chart(levels):
     return [
         {
             "speed": level["speed"],
             "movement_percent": level["movement_percent"],
+            "movement_percent_per_star": level["movement_percent_per_star"],
             "stars": level["score"],
             "age": level.get("age"),
             "report": level.get("report"),
@@ -360,6 +405,7 @@ def full_reports_charts(levels):
     return {
         "level_percent_by_age": level_percent_by_age_chart(levels),
         "score_by_age": score_by_age_chart(levels),
+        "movement_per_star_by_age": movement_per_star_by_age_chart(levels),
         "stars_by_speed": stars_by_speed_chart(levels),
     }
 
@@ -405,6 +451,13 @@ def summarize_levels(levels):
         ),
         "average_movement_percent": average(
             [level["movement_percent"] for level in levels]
+        ),
+        "average_movement_percent_per_star": average(
+            [
+                level["movement_percent_per_star"]
+                for level in completed_levels
+                if level["movement_percent_per_star"] is not None
+            ]
         ),
         "average_speed": average(
             [level["speed"] for level in levels]

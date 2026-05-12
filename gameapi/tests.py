@@ -98,6 +98,8 @@ class FullReportStatsChartTests(SimpleTestCase):
 
         global_stats = full_reports_global_stats([{"stats": stats}])
 
+        self.assertAlmostEqual(stats["average_movement_percent_per_star"], 20.833333333333336)
+        self.assertAlmostEqual(global_stats["average_movement_percent_per_star"], 20.833333333333336)
         self.assertEqual(
             global_stats["charts"]["level_percent_by_age"],
             [
@@ -119,11 +121,22 @@ class FullReportStatsChartTests(SimpleTestCase):
             ],
         )
         self.assertEqual(
+            global_stats["charts"]["movement_per_star_by_age"],
+            [
+                {
+                    "age": 70,
+                    "level_count": 2,
+                    "average_movement_percent_per_star": 20.833333333333336,
+                }
+            ],
+        )
+        self.assertEqual(
             global_stats["charts"]["stars_by_speed"],
             [
                 {
                     "speed": 1.0,
                     "movement_percent": 50.0,
+                    "movement_percent_per_star": 50.0 / 3,
                     "stars": 3,
                     "age": 70,
                     "report": 4,
@@ -134,6 +147,7 @@ class FullReportStatsChartTests(SimpleTestCase):
                 {
                     "speed": 0.5,
                     "movement_percent": 25.0,
+                    "movement_percent_per_star": 25.0,
                     "stars": 1,
                     "age": 70,
                     "report": 4,

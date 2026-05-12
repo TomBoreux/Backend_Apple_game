@@ -232,6 +232,25 @@ def svg_score_by_age(rows):
     )
 
 
+def svg_movement_per_star_by_age(rows):
+    return svg_bar_chart(
+        [
+            {
+                "label": row["age"] if row["age"] is not None else "Âge inconnu",
+                "value": row["average_movement_percent_per_star"],
+                "title": (
+                    f"Âge {row['age']} : mouvement par étoile moyen "
+                    f"{format_number(row['average_movement_percent_per_star'], 2)} "
+                    f"sur {row['level_count']} niveaux"
+                ),
+            }
+            for row in rows
+            if row["age"] is not None
+        ],
+        "Aucune donnée de mouvement par étoile disponible.",
+    )
+
+
 def svg_stars_by_speed(points):
     if not points:
         return svg_empty_chart("Aucun niveau terminé avec étoiles disponible.")
@@ -435,6 +454,10 @@ def stats_metric_items(stats, extra_items=None):
         [
             ("Niveaux", stats["level_count"]),
             ("Mouvement moyen", f"{format_number(stats['average_movement_percent'])}%"),
+            (
+                "Mouvement par étoile",
+                format_number(stats.get("average_movement_percent_per_star"), 2),
+            ),
             ("Vitesse moyenne", format_number(stats.get("average_speed"), 2)),
         ]
     )
@@ -448,6 +471,16 @@ def metrics_html(metrics):
         f'<strong>{escape(str(value))}</strong>'
         '</article>'
         for label, value in metrics
+    )
+
+
+def metric_sections_html(sections):
+    return "".join(
+        '<section class="metric-group">'
+        f'<h2>{escape(title)}</h2>'
+        f'<div class="metrics">{metrics_html(metrics)}</div>'
+        '</section>'
+        for title, metrics in sections
     )
 
 
@@ -466,7 +499,20 @@ def panel_html(title, body, description=""):
     )
 
 
-def stats_dashboard_html(title, subtitle, metrics, panels, json_href="?format=json"):
+def stats_dashboard_html(
+    title,
+    subtitle,
+    metrics,
+    panels,
+    json_href="?format=json",
+    metric_sections=None,
+):
+    metrics_block = (
+        metric_sections_html(metric_sections)
+        if metric_sections is not None
+        else f'<section class="metrics">{metrics_html(metrics)}</section>'
+    )
+
     return f"""<!doctype html>
 <html lang="fr">
 <head>
@@ -479,6 +525,8 @@ def stats_dashboard_html(title, subtitle, metrics, panels, json_href="?format=js
     h1 {{ margin: 0 0 8px; font-size: 28px; }}
     h2 {{ margin: 0 0 14px; font-size: 18px; }}
     .meta {{ margin: 0 0 24px; color: #5f6878; }}
+    .metric-group {{ margin-bottom: 18px; }}
+    .metric-group h2 {{ margin-bottom: 10px; color: #344054; font-size: 16px; }}
     .metrics {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 12px; margin-bottom: 18px; }}
     .metric {{ background: white; border: 1px solid #e4e8f0; border-radius: 8px; padding: 14px; }}
     .metric span {{ display: block; color: #667085; font-size: 13px; margin-bottom: 6px; }}
@@ -508,7 +556,7 @@ def stats_dashboard_html(title, subtitle, metrics, panels, json_href="?format=js
   <main>
     <h1>{escape(title)}</h1>
     <p class="meta">{escape(subtitle)} <a href="{escape(json_href)}">Voir les données JSON</a></p>
-    <section class="metrics">{metrics_html(metrics)}</section>
+    {metrics_block}
     <section class="charts">{"".join(panels)}</section>
   </main>
 </body>
@@ -549,6 +597,14 @@ def full_report_stats_html(payload):
                 max_floor=3,
             ),
             "Compare le score obtenu à chaque niveau terminé du rapport.",
+        ),
+        panel_html(
+            "Mouvement par étoile",
+            svg_bar_chart(
+                completed_level_chart_rows(levels, "movement_percent_per_star"),
+                "Aucun niveau terminé avec ratio disponible.",
+            ),
+            "Rapporte le pourcentage de mouvement au nombre d'étoiles obtenu : une valeur haute signale beaucoup de déplacement pour peu de réussite.",
         ),
         panel_html(
             "Vitesse par niveau",
@@ -651,15 +707,15 @@ def full_reports_stats_html(payload):
         f"{payload['excluded_report_count']} exclus, "
         f"{payload['failed_report_count']} erreurs."
     )
-    metrics = stats_metric_items(
+    all_report_metrics = [
+        ("Rapports", payload["report_count"]),
+        ("Rapports Android", payload["android_report_count"]),
+        ("Rapports exclus", payload["excluded_report_count"]),
+        ("Rapports en erreur", payload["failed_report_count"]),
+    ]
+    analyzed_report_metrics = stats_metric_items(
         stats,
-        [
-            ("Rapports", payload["report_count"]),
-            ("Rapports Android", payload["android_report_count"]),
-            ("Rapports analysés", payload["parsed_report_count"]),
-            ("Rapports exclus", payload["excluded_report_count"]),
-            ("Rapports en erreur", payload["failed_report_count"]),
-        ],
+        [("Rapports analysés", payload["parsed_report_count"])],
     )
     panels = [
         panel_html(
@@ -671,6 +727,11 @@ def full_reports_stats_html(payload):
             "Score moyen en fonction de l'âge",
             svg_score_by_age(charts["score_by_age"]),
             "Regroupe les niveaux terminés des rapports analysés par âge et affiche le score moyen obtenu.",
+        ),
+        panel_html(
+            "Mouvement par étoile en fonction de l'âge",
+            svg_movement_per_star_by_age(charts["movement_per_star_by_age"]),
+            "Regroupe les niveaux terminés par âge et affiche le mouvement moyen consommé pour chaque étoile obtenue.",
         ),
         panel_html(
             "Nombre d'étoiles en fonction de la vitesse",
@@ -687,8 +748,12 @@ def full_reports_stats_html(payload):
     return stats_dashboard_html(
         "Stats générales des rapports",
         subtitle,
-        metrics,
+        [],
         panels,
+        metric_sections=[
+            ("Tous les rapports", all_report_metrics),
+            ("Rapports analysés", analyzed_report_metrics),
+        ],
     )
 
 
