@@ -124,8 +124,8 @@ class FullReportAdmin(ReportDownloadAdminMixin, admin.ModelAdmin):
             return "-"
 
         return format_html(
-            '<a href="/api/full-report/{}/chart/" target="_blank">View chart</a>',
-            obj.pk,
+            '<a href="{}" target="_blank">View chart</a>',
+            reverse("gameapi_full_report_chart", args=[obj.pk]),
         )
 
     @admin.display(description="Stats")
@@ -134,8 +134,8 @@ class FullReportAdmin(ReportDownloadAdminMixin, admin.ModelAdmin):
             return "-"
 
         return format_html(
-            '<a href="/api/full-report/{}/stats/" target="_blank">View stats</a>',
-            obj.pk,
+            '<a href="{}" target="_blank">View stats</a>',
+            reverse("gameapi_full_report_stats", args=[obj.pk]),
         )
 
 
@@ -189,8 +189,8 @@ class FullReportInline(admin.TabularInline):
             return "-"
 
         return format_html(
-            '<a href="/api/full-report/{}/chart/" target="_blank">View chart</a>',
-            obj.pk,
+            '<a href="{}" target="_blank">View chart</a>',
+            reverse("gameapi_full_report_chart", args=[obj.pk]),
         )
 
     @admin.display(description="Stats")
@@ -199,8 +199,8 @@ class FullReportInline(admin.TabularInline):
             return "-"
 
         return format_html(
-            '<a href="/api/full-report/{}/stats/" target="_blank">View stats</a>',
-            obj.pk,
+            '<a href="{}" target="_blank">View stats</a>',
+            reverse("gameapi_full_report_stats", args=[obj.pk]),
         )
 
 
