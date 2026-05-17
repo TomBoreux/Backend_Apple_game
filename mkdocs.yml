@@ -12,6 +12,8 @@ nav:
   - API: api.md
   - Rapports et statistiques: reports.md
   - Déploiement: deployment.md
+  - Intégration frontend: frontend-integration.md
+  - Automatisation frontend: frontend-automation.md
 markdown_extensions:
   - admonition
   - tables
