@@ -17,6 +17,7 @@ db.sqlite3-journal
 # Static files
 staticfiles/
 static/
+site/
 
 # Media (uploads : rapports, seeds)
 media/
