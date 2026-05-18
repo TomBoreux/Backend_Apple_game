@@ -177,8 +177,7 @@ def level_stats(level, level_index):
     traveled_distance = path_distance(player_positions)
     target_distance = distance_between(level["basket"], level["apple_tree"])
     tree_count = len(level["trees"])
-    malus_time = 6 + 2 * tree_count
-    playable_time = max(level["time_spent"] - malus_time, 0)
+    playable_time = max(level["time_spent"], 0)
     expected_distance = playable_time * 2
     speed = traveled_distance / playable_time if playable_time else 0
     movement_ratio = (
@@ -199,7 +198,6 @@ def level_stats(level, level_index):
         "seed": level["seed"],
         "time_spent": level["time_spent"],
         "playable_time": playable_time,
-        "malus_time": malus_time,
         "basket": level["basket"],
         "apple_tree": level["apple_tree"],
         "visual": level["visual"],
