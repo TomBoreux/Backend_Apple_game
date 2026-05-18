@@ -529,8 +529,7 @@ def _plot_level(ax, level, level_index, plt, np):
         plt.Circle((basket[0], basket[1]), radius_90, fill=False, color="orange", linestyle="--")
     )
 
-    malus = 6 + 2 * len(trees)
-    playable_time = max(level["time_spent"] - malus, 0)
+    playable_time = max(level["time_spent"], 0)
     percentage = distance / (playable_time * 2) if playable_time else 0
 
     ax.set_title(f"Niveau {level_index + 1} - Pourcentage {int(percentage * 100)}%")
