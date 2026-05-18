@@ -517,12 +517,16 @@ def _plot_level(ax, level, level_index, plt, np):
     )
     radius_20 = target_distance * math.sin(20 * math.pi / 180)
     radius_40 = target_distance * math.sin(40 * math.pi / 180)
+    radius_90 = target_distance * math.sin(90 * math.pi / 180)
 
     ax.add_patch(
         plt.Circle((basket[0], basket[1]), radius_20, fill=False, color="cyan", linestyle="--")
     )
     ax.add_patch(
         plt.Circle((basket[0], basket[1]), radius_40, fill=False, color="magenta", linestyle="--")
+    )
+    ax.add_patch(
+        plt.Circle((basket[0], basket[1]), radius_90, fill=False, color="orange", linestyle="--")
     )
 
     malus = 6 + 2 * len(trees)
@@ -557,6 +561,7 @@ def _legend_handles(plt, np):
         plt.Line2D([0], [0], color=colors_gradient[0], linewidth=3, label="Position joueur"),
         plt.Line2D([0], [0], color="cyan", linewidth=2, linestyle="--", label="Seuil 20 degres"),
         plt.Line2D([0], [0], color="magenta", linewidth=2, linestyle="--", label="Seuil 40 degres"),
+        plt.Line2D([0], [0], color="orange", linewidth=2, linestyle="--", label="Seuil 90 degres"),
     ]
 
 
